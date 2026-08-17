@@ -9,9 +9,9 @@ water waves — where a full height field must be recovered for every frame of a
 recording.
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/workflow_dark.jpg">
-  <source media="(prefers-color-scheme: light)" srcset="assets/workflow_light.jpg">
-  <img alt="FtpSolver pipeline" src="assets/workflow_light.jpg">
+  <source media="(prefers-color-scheme: dark)" srcset="assets/Workflow_dark.jpg">
+  <source media="(prefers-color-scheme: light)" srcset="assets/Workflow_light.jpg">
+  <img alt="FtpSolver pipeline" src="assets/Workflow_light.jpg">
 </picture>
 
 ## Features
