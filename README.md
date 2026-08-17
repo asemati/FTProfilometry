@@ -21,7 +21,7 @@ recording.
 - **Two phase-correction strategies:** spatial and temporal, for handling uncertainty in the absolute phase. 
 - **Multiple input formats:** standard image formats (`.png`, `.tiff`, `.bmp`, `.jpg`), plus LaVision DaVis `.set` and `.im7`.
 - **Camera calibration support**: reads pinhole and polynomial calibrations for real-world scaling and de-warping.
-- **Lateral shift correction**: a camera viewing the surface along a slanted ray samples a point that is displaced in-plane whenever the surface sits away from the reference plane. With a pinhole calibration available, setting `prcOpts.lateralShiftCorrection` back-projects every pixel to its true world position and resamples the height field onto the nominal mesh, removing that displacement.
+- **Correction of height-induced lateral displacement**: a camera viewing the surface along a slanted ray samples a point that is displaced in-plane whenever the surface sits away from the reference plane. With a pinhole calibration available, setting `prcOpts.lateralShiftCorrection` back-projects every pixel to its true world position and resamples the height field onto the nominal mesh, removing that displacement regardless of camera tilt and position.
 - **Automatic outlier detection**: detects abnormally high phase gradients (usually due to debris on the surface) and stores the positions per timestep in `postData.phaseAnomalies`. 
 - **Analysis and output:** animation of surfaces/phase and export of results.
 
