@@ -1,4 +1,32 @@
 function calibCell = readDavisCalibration(xmlAddr)
+% READDAVISCALIBRATION - Produces a cell containing calibration data read
+%                        from a Davis .xml file.
+%
+% Usage: calib = readDavisCalibration('D:/path/to/Calibration.xml');
+%
+% Inputs:
+%   xmlAddr - address of calibration .xml file.
+%
+% Outputs:
+%   calibCell - (N,2) cell structure, where N is the number of camera
+%   calibrations contained in the file. The first column contains the data
+%   and the second contains a string denoting the type of the calibration:
+%   "Pinhole" or "Polynomial". For polynomial calibrations, the cell value
+%   is itself a cell (M, 1), where M is the number of planes used in the
+%   polynomial calibration. For pinhole calibrations, it is a struct which 
+%   contains the intrinsic and extrinsic parameters. 
+% 
+%
+% Other m-files required: xml2struct
+% Subfunctions: readDavisPinholeCalibration, readDavisPolyCalibration
+% MAT-files required: none
+%
+%
+% Author: Ali Semati
+% May 2025; Last revision: 21-August-2026
+%
+%------------- BEGIN CODE --------------
+
 calibStruct = xml2struct(xmlAddr);
 
 if iscell(calibStruct.Calibration.CoordinateSystemsForEachView.CoordinateSystem.CoordinateMapper)
@@ -22,31 +50,19 @@ end
 end
 
 function calibStruct = readDavisPinholeCalibration(cMap)
-    % READDAVISPINHOLECALIBRATION - Produces Matlab calibration objects from 
-    %                               Davis XML.
-    %
-    % Usage: calibStruct = readDavisPinholeCalibration('D:/Project/Calibration.xml');
-    %
-    % Inputs:
-    %   xmlAddr - address of calibration .xml file.
-    %
-    % Outputs:
-    %   calibStruct - Contains intrinsic and extrinsic calibrations. The field
-    %   "intrinsics" contains intrinsics in OpenCV format (used by Davis). This 
-    %   format has zero based indexing, making the first pixel (0,0).
-    %   The field "intrinsicsMatlab" contains the same information, but with
-    %   the principal point shifted by one to account for the fact that in
-    %   Matlab, the first pixel is (1,1).
-    % 
-    % Other m-files required: xml2struct
-    % Subfunctions: none
-    % MAT-files required: none
-    %
-    %
-    % Author: Ali Semati
-    % May 2025; Last revision: 04-June-2025
-    
-    %------------- BEGIN CODE --------------
+%   Extracts pinhole parameters from Davis pinhole calibration struct. 
+%   The field "intrinsics" in calibStruct contains intrinsics in OpenCV 
+%   format (used by Davis). This format has zero based indexing, making the
+%   first pixel (0,0). The field "intrinsicsMatlab" contains the same
+%   information, but with the principal point shifted by one to account for
+%   the fact that in Matlab, the first pixel is (1,1).
+
+    if isfield(cMap.Attributes, 'CameraIdentifier')
+        camNum = str2double(cMap.Attributes.CameraIdentifier);
+    else
+        camNum = [];
+    end
+
     % radial distortion coefficients
     radialDist = zeros(1,3);
     % tangential distortion coefficients
@@ -132,12 +148,16 @@ function calibStruct = readDavisPinholeCalibration(cMap)
     calibStruct.extrinsics = extrinsics;
     calibStruct.EulerAngles = rotation';    % X,Y,Z in radians
     calibStruct.scaling = scaleStructDavis;
+    calibStruct.camNum = camNum;
 end
 
 function calibCell = readDavisPolyCalibration(cMap)
-    % READDAVISPOLYCALIBRATION - Produces polynomial coefficients from 
-    % Davis calibration xml
-    camNum = str2double(cMap.Attributes.CameraIdentifier);
+%   Extracts polynomial coefficients from Davis polynomial calibration struct. 
+    if isfield(cMap.Attributes, 'CameraIdentifier')
+        camNum = str2double(cMap.Attributes.CameraIdentifier);
+    else
+        camNum = [];
+    end
     calibType = cMap.Attributes.Type;
     
     params = cMap.PolynomialParameters;
