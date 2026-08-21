@@ -76,12 +76,12 @@ demoCase.writeCase("path/to/output");
 
 ## Resolution
 
-Two factors control resolution independently. `resizeFactor` (default `0.1`) rescales the raw images
+Two factors control resolution independently. `resizeFactor` (default `1`) rescales the raw images
 before they are demodulated and so governs the cost of the computation, while
 `resizeFactorDisplay` (default `0.5`) rescales the unwrapped phase before it is stored
 and so governs the size of everything that comes out of a run: the surface and phase
 stacks and the coordinate meshes. A 1000×600 computational
-domain therefore produces 500×300 output arrays at the default setting. Run `setResizeFactor(1)` to keep the full grid.
+domain therefore produces 500×300 output arrays at the default setting. Set `resizeFactorDisplay = 1` to keep the full grid.
 
 ## Calibration
 
