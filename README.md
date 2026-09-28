@@ -72,7 +72,7 @@ demoCase.writeCase("path/to/output");
 3. **(Optional) Calibrate** the phase-to-height model.
 4. **Solve** with `solve()` to demodulate, unwrap, phase-correct, and convert to height
    for every frame.
-5. **Inspect and export** using `animateSurf()`, and `writeCase()`.
+5. **Inspect and export** using `animate()`, and `writeCase()`.
 
 ## Resolution
 
