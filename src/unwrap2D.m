@@ -24,7 +24,7 @@
 %     Muhammad F. Kasim, University of Oxford (2017)                           %
 %     Email: firman.kasim@gmail.com                                            %
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-function res_img = unwrap_phase(img)
+function res_img = unwrap2D(img)
     [Ny, Nx] = size(img);
     % get the reliability
     reliability = get_reliability(img); % (Ny,Nx)
