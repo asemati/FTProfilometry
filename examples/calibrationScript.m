@@ -32,6 +32,6 @@ calibCase.calibratePoly(2, heightVec, excludeHeights=outlierHeights)
 calibCase.writePolyCalibration("path\to\workingDirectory\polyCalibrationParams.mat");
 
 %% rerun to calculate surface elevation field
-demoCase.clbModeOff();
-demoCase.solve();
-demoCase.animate(1, 12, 1)
+calibCase.clbModeOff();
+calibCase.solve();
+calibCase.animate(1, 12, 1)
