@@ -45,7 +45,7 @@ classdef FtpSolver < handle
 %     projection and PIV. Exp Fluids 67, 120 (2026).
 %
 % Author: Ali Semati
-% April 2024; Last revision: 17-August-2026
+% April 2024;
 
 %------------- BEGIN CODE --------------
     
@@ -155,6 +155,9 @@ methods
             obj.surfParams.periodOrg = period;
             obj.prcOpts.patNormAxis = patNormAxis;
             obj.prcOpts.patNormVec = normVec;
+            if strcmpi(patNormAxis, 'Y')
+                obj.pCorrOpts.startEdge = 'top';
+            end
             obj.updateGeometry();
         end
     end
@@ -272,7 +275,7 @@ methods
             obj.preprocessCurrentImage();
             
             if obj.loopState.discardCurr
-                obj.storeData()
+                obj.storeData()     % write NaN frame
                 obj.loopState.discardCurr = false;
                 continue
             end
@@ -1655,7 +1658,7 @@ methods
 
         while true
             rect = drawrectangle(tempHandle.Parent);
-            rect = round(rect);
+            rect.Position = round(rect.Position);
             if isvalid(rect)
                 if ~isempty(rect.Position)
                     obj.prcOpts.cropRectOrg = round(rect.Position);
@@ -1950,8 +1953,8 @@ methods
         end
     
         if isequal(opts.ZLim, [0 0])
-            zMin = prctile(dataArray(:,:,1:4:end), 0.01, 'all');
-            zMax = prctile(dataArray(:,:,1:4:end), 99.99, 'all');
+            zMin = prctile(dataArray(1:4:end,1:4:end,:), 0.01, 'all');
+            zMax = prctile(dataArray(1:4:end,1:4:end,:), 99.99, 'all');
         else
             zMin = opts.ZLim(1);
             zMax = opts.ZLim(2);
@@ -1979,12 +1982,21 @@ methods
         zlim(axHndl, [midHeight - 1.5*amp, midHeight + 2*amp])
 
         c_hndl = colorbar;
-        c_hndl.Label.String = 'Elevation (mm)';
+
+        if strcmpi(opts.target, 'surf')
+            c_hndl.Label.String = 'Elevation (mm)';
+        elseif strcmpi(opts.target, 'phase')
+            c_hndl.Label.String = '\Delta\phi (rad)';
+        end
         clim(axHndl, [0.9*zMin 0.9*zMax])
 
         xlabel(axHndl, 'x (mm)')
         ylabel(axHndl, 'y (mm)')
-        zlabel(axHndl, 'z (mm)')
+        if strcmpi(opts.target, 'surf')
+            zlabel(axHndl, 'z (mm)')
+        elseif strcmpi(opts.target, 'phase')
+            zlabel(axHndl, '\Delta\phi (rad)')
+        end
 
         set(axHndl, 'fontsize', opts.FontSize)
         set(axHndl, 'view' , opts.view)
@@ -2077,7 +2089,7 @@ methods
             endTime (1,1) double = obj.inputData.solveRange(2)
             framerate (1,1) double = 5
         end
-        figH = figure(120);
+        figH = figure();
         
         pauseTime = 1/framerate;
 
