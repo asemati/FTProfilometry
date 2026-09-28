@@ -1,3 +1,5 @@
+% data used here is available on Dataverse.no at https://doi.org/10.18710/MWEHEM
+
 %% read NetCDF files and convert
 filename = "path\to\imageSet_ProfCalibration.nc";
 imageSet = ncread(filename, 'imageSet', [1 1 1], [inf, inf, inf]);
