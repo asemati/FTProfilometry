@@ -61,7 +61,7 @@ demoCase = FtpSolver("demoCase", ...              % case ID must be a valid MATL
 
 demoCase.setRange(1,100);             % set solve range from frame 1 to 100
 demoCase.solve();                     % run the full FTP pipeline over the solve range
-demoCase.animateSurf(1, 100, 10);     % preview frames 1–100 at 10 fps
+demoCase.animate(1, 100, 10);         % animate frames 1–100 at 10 fps
 demoCase.writeCase("path/to/output");
 ```
 ## Typical workflow
