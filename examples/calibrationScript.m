@@ -10,11 +10,11 @@ end
 heightVec = ncread(filename, 'height', 1, inf); 
 
 %% set up FtpSolver object and solve
-calibCase = FtpSolver("calibCase", ...              % case ID must be a valid MATLAB variable name
+calibCase = FtpSolver("calibCase", ...
     refAddr       = "path\to\workingDirectory\imageSet\image_0006.png", ...       % flat reference fringe image
     dataAddr      = "path\to\workingDirectory\imageSet\image_0001.png", ...       % fringe image sequence
     camCalibAddr  = "path\to\workingDirectory\CameraPinholeCalibration.xml", ...  % camera calibration path
-    cropRect      = [584 685 1411 1149] ...       % computational domain (X, Y, Width, Height)
+    cropRect      = [584 685 1420 1150] ...       % computational domain (X, Y, Width, Height)
     );    
 
 calibCase.clbModeOn();
