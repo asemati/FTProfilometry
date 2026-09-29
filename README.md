@@ -89,8 +89,8 @@ The phase-to-height conversion uses one of two models:
 
 | Model     | Method                              | Set up via                          |
 |-----------|-------------------------------------|-------------------------------------|
-| `takeda`  | Analytical                          | `demoCase.setProfModelTakeda(L, d)`          |
-| `poly`    | Pixel-wise polynomial fit           | `demoCase.setProfModelPoly(addr)` |
+| `takeda`  | Analytical                          | `demoCase.setElevModelTakeda(L, d)`          |
+| `poly`    | Pixel-wise polynomial fit           | `demoCase.setElevModelPoly(addr)` |
 
 The `poly` calibration is built from a stack of reference planes at
 known heights (`heightVec`) and **requires the solver to be run at full resolution**
@@ -109,7 +109,7 @@ known heights (`heightVec`) and **requires the solver to be run at full resoluti
 | `animate`                             | Visualize the reconstructed surface / phase.          |
 | `exportVideo`                         | Export a video of the surface / phase.                |
 | `writeCase`                           | Save results to binary and `.mat` files.              |
-|`readData`                             | Read surface elevation / phase data `.bin` files.     |
+| `readData`                            | Read surface elevation / phase data `.bin` files.     |
 
 
 ## Output format
