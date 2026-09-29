@@ -94,7 +94,7 @@ The phase-to-height conversion uses one of two models:
 
 The `poly` calibration is built from a stack of reference planes at
 known heights (`heightVec`) and **requires the solver to be run at full resolution**
-(`resizeFactor = 1`, `resizeFactorDisplay = 1`). Run `clbModOn()` before `calibratePoly(...)` to set these parameters automatically. Calibration coefficients can be saved and reloaded with `writePolyCalibration` / `setProfModelPoly`.
+(`resizeFactor = 1`, `resizeFactorDisplay = 1`). Run `clbModeOn()` before `calibratePoly(...)` to set these parameters automatically. Calibration coefficients can be saved and reloaded with `writePolyCalibration` / `setElevModelPoly`.
 
 ## Key methods
 
