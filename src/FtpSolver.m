@@ -2503,8 +2503,8 @@ methods
         % Row and column indices of the OUTPUT frame
         r = round(obj.prcOpts.cropRectDisplay);
         [Ny, Nx] = size(obj.worldCoords.mesh.x);
-        rowInds = r(2) : min(Ny, r(2) + r(4));
-        colInds = r(1) : min(Nx, r(1) + r(3));
+        rowInds = r(2) + 1 : min(Ny, r(2) + r(4));
+        colInds = r(1) + 1 : min(Nx, r(1) + r(3));
     end
 %%
     function [subarray, x_crop, y_crop] = returnDisplaySubarray(obj, firstTimestep, lastTimestep)
