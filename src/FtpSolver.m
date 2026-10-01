@@ -744,10 +744,6 @@ methods (Access = public)
     end
 
     function writeCase(obj, addr)
-      if ~exist('addr', 'var')
-        addr = uigetdir();
-      end
-
       if ~isfolder(fullfile(addr, obj.caseID))
         mkdir(fullfile(addr, obj.caseID))
       end
@@ -757,7 +753,7 @@ methods (Access = public)
       obj.writeResultFiles(fullfile(addr, obj.caseID))
     end
 
-    function [optInd, isSafeLine, peaksLineCell] = findOptimalPeakInd(obj, peakInd)
+    function [optInd, isSafeLine, peakLocsCell] = findOptimalPeakInd(obj, peakInd)
         % Find which phase-correction peaks can be tracked inside the output frame.
         %
         %   [optInd, isSafeLine, peaksLineCell] = findOptimalPeakInd(obj, peakInd)
@@ -779,7 +775,7 @@ methods (Access = public)
         %   isSafeLine    - per-line logical: true where the candidate peakInd
         %                   is eligible. All false when peakInd is omitted or
         %                   empty.
-        %   peaksLineCell - detected peak positions per line, RAW-frame
+        %   peakLocsCell  - detected peak positions per line, RAW-frame
         %                   coordinates, flipped for startEdge 'right'/'bottom'
         %
 
@@ -790,7 +786,7 @@ methods (Access = public)
         nLines = length(obj.pCorrOpts.lineInds);
         optInd = nan;
         isSafeLine = false(1, nLines);
-        peaksLineCell = cell(1, nLines);
+        peakLocsCell = cell(1, nLines);
 
         % prerequisites: reference image, correction lines, fringe period,
         % pattern normal axis, and output-frame geometry must all exist
@@ -836,7 +832,7 @@ methods (Access = public)
                 peakLocs = flip(peakLocs);
             end
 
-            peaksLineCell{i} = peakLocs;
+            peakLocsCell{i} = peakLocs;
 
             % inside the safe window, with a neighbor on each side
             eligible = peakLocs >= safeLo & peakLocs <= safeHi;
@@ -1717,7 +1713,7 @@ methods (Access = public)
         lineNum = min(2, length(obj.pCorrOpts.lineInds));
         lineInd = obj.pCorrOpts.lineInds(lineNum);
 
-        [optInd, ~, peaksLineCell] = obj.findOptimalPeakInd(obj.pCorrOpts.peakInd);
+        [optInd, ~, refPeakLocsCell] = obj.findOptimalPeakInd(obj.pCorrOpts.peakInd);
 
         peakInd = obj.pCorrOpts.peakInd;
         if isempty(peakInd)
@@ -1730,8 +1726,8 @@ methods (Access = public)
             fprintf("pCorrOpts.peakInd is empty; showing the automatic choice (%g).\n", optInd)
         end
 
-        peaksRef = peaksLineCell{lineNum};
-        if isempty(peaksRef) || peakInd > length(peaksRef)
+        refPeakLocs = refPeakLocsCell{lineNum};
+        if isempty(refPeakLocs) || peakInd > length(refPeakLocs)
             error("Peak %g was not detected on phase-correction line %g of the reference image.", ...
                 peakInd, lineInd)
         end
@@ -1741,14 +1737,14 @@ methods (Access = public)
         else
             refLine = double(obj.imgData.refRaw(:, lineInd));
         end
-        peakValsRef = refLine(peaksRef);
+        refPeakVals = refLine(refPeakLocs);
 
         % detect the same line in the requested images
         targetImages = firstTimestep:skip:lastTimestep;
         N = length(targetImages);
 
-        peaksCurrCell = cell(1, N);
-        corrLineCell = cell(1, N);
+        currPeaksCell = cell(1, N);
+        currLineCell = cell(1, N);
 
         for n = 1:N
             timestep = targetImages(n);
@@ -1762,8 +1758,15 @@ methods (Access = public)
                 peakVals = flip(peakVals);
             end
 
-            peaksCurrCell{n} = [peakLocs(:), peakVals(:)];
-            corrLineCell{n} = phaseCorrLine;
+            currPeaksCell{n} = [peakLocs(:), peakVals(:)];
+
+            if strcmpi(obj.fringe.normAxis, 'X')
+                currLine = double(img(lineInd, :));
+            else
+                currLine = double(img(:, lineInd));
+            end
+
+            currLineCell{n} = currLine;
         end
 
         % plot
@@ -1772,27 +1775,27 @@ methods (Access = public)
         nexttile([3 1])
         plot(refLine)
         hold on
-        scatter(peaksRef, 1.01*peakValsRef, 'v', 'filled')
-        scatter(peaksRef(peakInd), 1.01*peakValsRef(peakInd), 'v', 'filled', 'MarkerFaceColor', [0.47 0.9 0.19])
+        scatter(refPeakLocs, 1.01*refPeakVals, 'v', 'filled')
+        scatter(refPeakLocs(peakInd), 1.01*refPeakVals(peakInd), 'v', 'filled', 'MarkerFaceColor', [0.47 0.9 0.19])
         hold off
         if strcmpi(obj.pCorrOpts.startEdge, 'left') || strcmpi(obj.pCorrOpts.startEdge, 'top')
-            xLimit = [1 round(1.5*peaksRef(peakInd))];
+            xLimit = [1 round(1.5*refPeakLocs(peakInd))];
         else
-            xLimit = [round(0.9*peaksRef(peakInd)) length(refLine)];
+            xLimit = [round(0.9*refPeakLocs(peakInd)) length(refLine)];
         end
         yLimit = [0.8*min(refLine(xLimit(1):xLimit(2))) 1.2*max(refLine(xLimit(1):xLimit(2)))];
 
         xlim(xLimit)
         ylim(yLimit)
-        title("Reference: x_p = " + num2str(peaksRef(peakInd)) )
+        title("Reference: x_p = " + num2str(refPeakLocs(peakInd)) )
         for i = 1:N
             nexttile
-            plot(corrLineCell{i})
+            plot(currLineCell{i})
             hold on
-            scatter(peaksCurrCell{i}(:,1), 1.05*peaksCurrCell{i}(:,2), 'v', 'filled')
-            if size(peaksCurrCell{i}, 1) >= peakInd
-                scatter(peaksCurrCell{i}(peakInd, 1), 1.05*peaksCurrCell{i}(peakInd,2), 'v', 'filled', 'MarkerFaceColor', [0.47 0.9 0.19])
-                title(num2str(targetImages(i)) + ": x_p = " + num2str(peaksCurrCell{i}(peakInd, 1)) )
+            scatter(currPeaksCell{i}(:,1), 1.05*currPeaksCell{i}(:,2), 'v', 'filled')
+            if size(currPeaksCell{i}, 1) >= peakInd
+                scatter(currPeaksCell{i}(peakInd, 1), 1.05*currPeaksCell{i}(peakInd,2), 'v', 'filled', 'MarkerFaceColor', [0.47 0.9 0.19])
+                title(num2str(targetImages(i)) + ": x_p = " + num2str(currPeaksCell{i}(peakInd, 1)) )
             else
                 title(num2str(targetImages(i)) + ": peak " + num2str(peakInd) + " not detected")
             end
