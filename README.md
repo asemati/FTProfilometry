@@ -61,7 +61,7 @@ demoCase = FtpSolver("demoCase", ...              % case ID must be a valid MATL
 
 demoCase.setRange(1,100);             % set solve range from frame 1 to 100
 demoCase.solve();                     % run the full FTP pipeline over the solve range
-demoCase.animate(1, 100, 10);         % animate frames 1–100 at 10 fps
+demoCase.animate(1, 100, 10);         % animate timesteps 1–100 at 10 fps
 demoCase.writeCase("path/to/output");
 ```
 ## Typical workflow
@@ -94,7 +94,7 @@ The phase-to-height conversion uses one of two models:
 
 The `poly` calibration is built from a stack of reference planes at
 known heights (`heightVec`) and **requires the solver to be run at full resolution**
-(`resizeFactor = 1`, `resizeFactorDisplay = 1`). Run `clbModeOn()` before `calibratePoly(...)` to set these parameters automatically. Calibration coefficients can be saved and reloaded with `writePolyCalibration` / `setElevModelPoly`.
+(`resizeFactor = 1`, `resizeFactorDisplay = 1`). Run `calibModeOn()` before `calibratePoly(...)` to set these parameters automatically. Calibration coefficients can be saved and reloaded with `writePolyCalibration` / `setElevModelPoly`.
 
 ## Key methods
 
@@ -104,7 +104,7 @@ known heights (`heightVec`) and **requires the solver to be run at full resoluti
 | `calibrateTakeda` / `calibratePoly`   | Calibrate the phase-to-height model.                  |
 | `setRange`                            | Restrict processing to a sub-range of frames.         |
 | `drawPeaks`                           | Visualize the performance of the spatial phase correction technique.
-| `writeInParts`                        | Split the computation into blocks and write to temporary files on disk during the run. 
+| `enableChunkedOutput`                 | Split the computation into chunks and write to temporary files on disk during the run. 
 | `solve`                               | Run the full processing pipeline.                     |
 | `animate`                             | Visualize the reconstructed surface / phase.          |
 | `exportVideo`                         | Export a video of the surface / phase.                |
@@ -114,7 +114,7 @@ known heights (`heightVec`) and **requires the solver to be run at full resoluti
 
 ## Output format
 
-`writeCase` writes results as binary (`*_surfData.bin` and `*_phaseData.bin`) files. Each file stores the number of dimensions, the array size, and then the data as single-precision values. Use the static helper `FtpSolver.readData(addr, seekTime)` to read them back into MATLAB. The class object itself, minus the surface and phase data, is written to a `.mat` file. Coordinate arrays are written to a separate `surfMesh.mat` file.
+`writeCase` writes results as binary (`*_elevData.bin` and `*_phaseData.bin`) files. Each file stores the number of dimensions and the array size as uint32, and the data as single-precision values. Use the helper function `FtpSolver.readData(addr, seekTime)` to read them back into MATLAB. The class object itself, minus the surface and phase data, is written to a `.mat` file. Coordinate arrays are written to a separate `coordinateMesh.mat` file.
 
 ## Citation
 This implementation is based on the FTP method described in:

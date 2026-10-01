@@ -18,7 +18,7 @@ calibCase = FtpSolver("calibCase", ...
     );    
 
 calibCase.clbModeOn();
-calibCase.setDisplayToMargin();
+calibCase.setDisplayFromMargin(0);
 calibCase.pCorrOpts.peakInd = 15;   % use the 15th fringe peak for phase correction
 calibCase.solve(); 
 calibCase.animate(1, 12, 1, target='phase');
