@@ -9,11 +9,11 @@ classdef FtpSolver < handle
 %
 %   WORKFLOW
 %     profCase = FtpSolver(caseID, ...
-%                             refAddr="path/to/refImage.tiff", ...
-%                             dataAddr="path/to/data.tiff", ...
+%                             refPath="path/to/refImage.tiff", ...
+%                             dataPath="path/to/data.tiff", ...
 %                             resizeFactor=0.7, ...
 %                             cropRect=[100 150 1500 1200], ...
-%                             camCalibAddr="path/to/calibration.mat" ...
+%                             camCalibPath="path/to/calibration.mat" ...
 %                             );
 %     profCase.setROI();
 %     profCase.solve();
@@ -30,7 +30,7 @@ classdef FtpSolver < handle
 %
 %   DEPENDENCIES
 %     xml2struct, rectifyImagePinhole, readDavisCalibration
-%     unwrap2D (only for prcOpts.unwrapMethod = '2D')
+%     unwrap2D (only for setUnwrapMethod("2D"))
 %     Davis readimx library (for .set and .im7 file formats)
 %     Image Processing Toolbox
 %     Curve Fitting Toolbox
@@ -50,7 +50,7 @@ classdef FtpSolver < handle
 %------------- BEGIN CODE --------------
     
 properties (SetAccess = public)
-    caseID          
+    caseID              % object name
     source              % data attributes
     imgData             % image buffers
     phaseData           % computed phase
@@ -67,19 +67,19 @@ properties (SetAccess = public)
     postData            % outlier coordinates
 end
 
-%% ----------- Setup and configuration -----------
+%% ----------- Setup and solve() -----------
 methods (Access = public)
     function obj = FtpSolver(caseID, opts)
         arguments
             caseID              {mustBeTextScalar}              = "default"
-            opts.refAddr        {mustBeTextScalar}              = ""
-            opts.dataAddr       {mustBeTextScalar}              = ""
+            opts.refPath        {mustBeTextScalar}              = ""
+            opts.dataPath       {mustBeTextScalar}              = ""
             opts.mmPerPixel     (1,1) double                    = NaN
             opts.period         (1,1) double                    = NaN
             opts.normAxis       string {mustBeMember(opts.normAxis, ["X", "Y"])} = "X"
             opts.resizeFactor   (1,1) double {mustBePositive}   = 1
             opts.cropRect       double                          = []
-            opts.camCalibAddr   {mustBeTextScalar}              = ""
+            opts.camCalibPath   {mustBeTextScalar}              = ""
             opts.camCalibNum    (1,1) double                    = 1    
             opts.dataCamInd     (1,1) {mustBeInteger}           = 1
             opts.refCamInd      (1,1) {mustBeInteger}           = 1
@@ -114,16 +114,16 @@ methods (Access = public)
         obj.source.dataCamInd           = opts.dataCamInd;
         obj.source.refCamInd            = opts.refCamInd;
 
-        if opts.refAddr == ""
+        if opts.refPath == ""
             return   % bare construction used by loadobj()
         end
         
 
         % load reference image
-        obj.loadRefImage(opts.refAddr)
+        obj.loadRefImage(opts.refPath)
         
         % load data
-        obj.loadDataset(opts.dataAddr)
+        obj.loadDataset(opts.dataPath)
 
         if ~isnan(opts.mmPerPixel)
             obj.worldCoords.scaling.X.SlopeOrg      = opts.mmPerPixel;
@@ -131,8 +131,8 @@ methods (Access = public)
             obj.worldCoords.scaling.mmPerPixelOrg   = opts.mmPerPixel;
         end
 
-        if strlength(opts.camCalibAddr) > 0
-            obj.readCameraCalibration(opts.camCalibAddr, opts.camCalibNum);
+        if strlength(opts.camCalibPath) > 0
+            obj.readCameraCalibration(opts.camCalibPath, opts.camCalibNum);
         end   
 
         obj.fringe.periodOrg = opts.period;
@@ -146,8 +146,8 @@ methods (Access = public)
         end
 
         if ~isempty(obj.prcOpts.burntPixelMask)
-            [obj.prcOpts.interpPixelRows, ...
-             obj.prcOpts.interpPixelCols] = find(obj.prcOpts.burntPixelMask);
+            [obj.prcOpts.burntPixelRows, ...
+             obj.prcOpts.burntPixelCols] = find(obj.prcOpts.burntPixelMask);
         end
                     
         obj.scaleAndTransformRef();
@@ -435,6 +435,34 @@ methods (Access = public)
         obj.elevModel.pixelwise = true;
     end
 
+    function writePolyCalibration(obj, addr)
+    % Save the polynomial calibration to a .mat file.
+    %   The resized working copy (coeffMat) is dropped; only the RAW-frame
+    %   coefficients and the fitted planes are written.
+    %   In:  addr - output .mat file path
+
+        temp = obj.elevModel.poly;
+        if isfield(temp, 'coeffMat')
+            temp = rmfield(temp, 'coeffMat');
+        end
+        save(addr, '-struct', 'temp')
+    end
+
+    function setStoredOutputs(obj, opts)
+    % Choose which quantities solve() keeps in memory and writeCase() writes.
+    %   setStoredOutputs(elev=true, phase=false, images=false)
+    %   Quantities not named keep their current setting.
+        arguments
+            obj
+            opts.elev   (1,1) logical = obj.outputConfig.elevOutput
+            opts.phase  (1,1) logical = obj.outputConfig.phaseOutput
+            opts.images (1,1) logical = obj.outputConfig.imageOutput
+        end
+        obj.outputConfig.elevOutput   = opts.elev;
+        obj.outputConfig.phaseOutput  = opts.phase;
+        obj.outputConfig.imageOutput = opts.images;
+    end
+
     function setElevModelTakeda(obj, L, d)
         % Select Takeda's phase-to-height model.
         %   In:  L - camera height above the reference plane (mm)
@@ -458,23 +486,10 @@ methods (Access = public)
         end
     end
 
-    function writePolyCalibration(obj, addr)
-        % Save the polynomial calibration to a .mat file.
-        %   The resized working copy (coeffMat) is dropped; only the RAW-frame
-        %   coefficients and the fitted planes are written.
-        %   In:  addr - output .mat file path
-
-        temp = obj.elevModel.poly;
-        if isfield(temp, 'coeffMat')
-            temp = rmfield(temp, 'coeffMat');
-        end
-        save(addr, '-struct', 'temp')
-    end
-
     function setPolyPixelwise(obj, state)
-        % Choose pixelwise or smoothed polynomial coefficients.
-        %   In:  state - true for the raw pixelwise fit, false for the poly22
-        %                smoothed coefficient planes
+    % Choose pixelwise or smoothed polynomial coefficients.
+    %   In:  state - true for the raw pixelwise fit, false for the poly22
+    %                smoothed coefficient planes
 
         if strcmpi(obj.elevModel.type, 'poly') && isfield(obj.elevModel, 'poly')
             obj.elevModel.pixelwise = logical(state);
@@ -484,15 +499,24 @@ methods (Access = public)
     end
 
     function setUnwrapMargin(obj, val)
-        % margin is in RAW-frame pixels
+    % Set the margin in RAW-frame pixels that is ignored by the unwrapping algorithm.
         obj.prcOpts.unwrapMarginOrg = val;
         obj.updateGeometry();
     end
 
-    function setRange(obj, r1, r2)
-        % Set the frame range processed by solve().
-        %   In:  r1 - first frame, or 'full' to use the whole dataset
-        %        r2 - last frame (ignored when r1 is 'full')
+    function setUnwrapMethod(obj, method)
+    % Set the unwrapping algorithm.
+        arguments 
+            obj
+            method (1,1) string {mustBeMember(method, ["1D", "2D"])}
+        end
+        obj.prcOpts.unwrapMethod = method;
+    end
+
+    function setSolveRange(obj, r1, r2)
+    % Set the frame range processed by solve().
+    %   In:  r1 - first frame, or 'full' to use the whole dataset
+    %        r2 - last frame (ignored when r1 is 'full')
 
         if strcmpi(r1, 'full')
             obj.prcOpts.solveRange = obj.source.fullRange;
@@ -506,10 +530,10 @@ methods (Access = public)
     end
     
     function setROI(obj)
-        % Define the computational domain interactively.
-        % Shows the raw reference image and waits for a rectangle to be
-        % drawn. The result becomes cropRectOrg, the display rectangle is
-        % set one unwrap margin inside it, and the geometry is refreshed.
+    % Define the computational domain interactively.
+    % Shows the raw reference image and waits for a rectangle to be
+    % drawn. The result becomes cropRectOrg, the display rectangle is
+    % set one unwrap margin inside it, and the geometry is refreshed.
 
         if isempty(obj.imgData.refScaled)
             error("Missing reference image.")
@@ -542,59 +566,43 @@ methods (Access = public)
         obj.pCorrOpts.peakInd = [];
         obj.updateGeometry();
     end
-
-    function showROI(obj)
-        % Draw the domain rectangles on the reference image.
-        % Overlays the computational domain (red), the unwrap margin (blue)
-        % and the display domain (green) for visual checking.
-
-        figure;
-        image = obj.imgData.refRaw;
-        image = rescale(image);
-
-        if ~isempty(obj.prcOpts.cropRectOrg)
-            image = insertShape(image, 'rectangle', obj.prcOpts.cropRectOrg, 'LineWidth', 5, 'ShapeColor', 'red');
-            image = insertText(image, obj.prcOpts.cropRectOrg(1:2), 'Computational domain', 'FontColor', 'red', 'FontSize', 20);
-            % draw unwrap margin
-            mg = obj.prcOpts.unwrapMarginOrg;
-            unwrapRect = obj.prcOpts.cropRectOrg + [mg, mg, -2*mg, -2*mg];
-            image = insertShape(image, 'rectangle', unwrapRect, 'LineWidth', 5, 'ShapeColor', 'blue');
-            image = insertText(image, unwrapRect(1:2) + [unwrapRect(3) 0], 'Unwrap margin', 'FontColor', 'blue', 'FontSize', 20, 'AnchorPoint', 'RightTop');
-
-        end
-
-        if ~isempty(obj.prcOpts.cropRectDisplayOrg)
-            absoluteCropDisplay = obj.prcOpts.cropRectDisplayOrg;
-            absoluteCropDisplay(1:2) = absoluteCropDisplay(1:2) + obj.prcOpts.cropRectOrg(1:2);
-            image = insertShape(image, 'rectangle', absoluteCropDisplay, 'LineWidth', 2, 'ShapeColor', 'green');
-            image = insertText(image, [absoluteCropDisplay(1), ...
-                                       absoluteCropDisplay(2) ...
-                                       + absoluteCropDisplay(4)], ...
-                                       'Display domain', 'FontColor', ...
-                                       'green', 'FontSize', 20, ...
-                                       'AnchorPoint', 'LeftBottom');
-        end
-        imshow(image, [])
-    end
     
     function setCropRect(obj, cropRect)
-        % Specify the computational domain at full image resolution in [x y width height] format.
+    % Specify the computational domain at full image resolution in [x y width height] format.
         obj.prcOpts.cropRectOrg = cropRect;
         obj.pCorrOpts.peakInd = [];
         obj.updateGeometry(); 
-     end
+    end
+
+    function setDemodMethod(obj, method)
+    % Set the demodulation algorithm.
+        arguments 
+            obj
+            method (1,1) string {mustBeMember(method, ["fourier", "wavelet"])}
+        end
+        obj.demodOpts.method = method;
+    end
+
+    function setFourierFiltWidthFrac(obj, frac)
+    % Set the width of the bandpass filter as a fraction of the carrier frequency (between 0 and 1).
+        arguments 
+            obj
+            frac (1,1) double
+        end
+        obj.demodOpts.filtWidthFrac = frac;
+    end
     
     function setPhaseCorrMethod(obj, method)
-        % Choose how the 2*n*pi offset of each frame is fixed.
-        %   setPhaseCorrMethod("temporal") - (default) Match each frame's 
-        %       phase to the previous frame. Fails if the acquisition 
-        %       frequency is too low. Failure at a single timestep will
-        %       propagate to the end. 
-        %   setPhaseCorrMethod("spatial")  - Track a fringe peak on the
-        %       correction lines and align it with the reference. Requires
-        %       the first fringe peak to remain visible throughout the
-        %       recording.
-        %   setPhaseCorrMethod("none")     - Leave the unwrapped phase as is.
+    % Choose how the 2*n*pi offset of each frame is fixed.
+    %   setPhaseCorrMethod("temporal") - (default) Match each frame's 
+    %       phase to the previous frame. Fails if the acquisition 
+    %       frequency is too low. Failure at a single timestep will
+    %       propagate to the end. 
+    %   setPhaseCorrMethod("spatial")  - Track a fringe peak on the
+    %       correction lines and align it with the reference. Requires
+    %       the first fringe peak to remain visible throughout the
+    %       recording.
+    %   setPhaseCorrMethod("none")     - Leave the unwrapped phase as is.
 
         arguments 
             obj
@@ -603,7 +611,29 @@ methods (Access = public)
         obj.pCorrOpts.method = method;
     end
 
+    function setTrackedPeakInd(obj, peakInd)
+    % Set the fringe peak that is tracked by the spatial phase correction algorithm.
+        arguments
+            obj
+            peakInd {mustBeNumeric, mustBeScalarOrEmpty, mustBeInteger, mustBePositive}
+        end
+        obj.pCorrOpts.peakInd = double(peakInd);
+    end
+
+    function setTrackedPeakSafetyFactor(obj, factor)
+    % Set the margin that is used to automatically determine the tracked fringe peak.
+    % If no fringe peak is set by the user, the spatial phase correction
+    % algorithm finds the closest peak within factor*fringePeriod pixels to
+    % the edge and tracks that. 
+        arguments
+            obj
+            factor (1,1) double {mustBePositive}
+        end
+        obj.pCorrOpts.edgeSafetyFactor = factor;
+    end
+
     function setDisplayFromMargin(obj, offset)
+    % Set the display crop rectangle as an offset from the unwrap margin.
         mrg = obj.prcOpts.unwrapMarginOrg;
         obj.prcOpts.cropRectDisplayOrg = [mrg + 1 + offset, mrg + 1 + offset, ... 
                                 obj.prcOpts.cropRectOrg(3) - 2*mrg - 2*offset, ...
@@ -612,47 +642,67 @@ methods (Access = public)
         obj.updateGeometry();
     end
 
-    function setResizeFactor(obj, factor) 
+    function setResizeFactor(obj, factor)
+    % Set the image resize factor (between 0 and 1) to reduce the computational cost of processing.
+        arguments
+            obj
+            factor (1,1) double {mustBePositive}
+        end
         obj.prcOpts.resizeFactor = factor;
         obj.updateGeometry();
     end
 
+    function setResizeFactorDisplay(obj, factor)
+    % Set the data resize factor (between 0 and 1) that is applied after the phase is calculated. Reduces storage size. 
+        arguments
+            obj
+            factor (1,1) double {mustBePositive}
+        end
+        obj.prcOpts.resizeFactorDisplay = factor;
+        obj.updateGeometry();
+    end
+
     function setWaveletScales(obj, minWavelength, maxWavelength, divisions)
-        % set wavelet scales based on pattern wavelength in pixels
-        % wavelength should be for the raw, unscaled image
+    % set wavelet scales based on pattern wavelength in pixels
+    % wavelength should be for the raw, unscaled image
         scaleMin = minWavelength*6/(2*pi) * obj.prcOpts.resizeFactor;
         scaleMax = maxWavelength*6/(2*pi) * obj.prcOpts.resizeFactor;
         obj.demodOpts.scaleList = linspace(scaleMin, scaleMax, divisions);
     end
 
     function setWaveletAngles(obj, angleList)
-        % restrict angles to the range (-135, 45] for consistency with FT method
+    % Restrict angles to the range (-135, 45] for consistency with FT method.
         obj.demodOpts.angleList = mod(angleList - 45, -180) + 45;
     end
     
+    function setBurntPixelMask(obj, mask)
+        % Store a logical mask which indicates burnt pixels. 
+        % Mask has to be the same size as the raw, unrectified image.
+        obj.prcOpts.burntPixelMask = mask;
+        [obj.prcOpts.burntPixelRows, ...
+            obj.prcOpts.burntPixelCols] = find(mask);
+    end
+    
     function calibModeOn(obj)
-        obj.prcOpts.resizeFactor = 1;
-        obj.prcOpts.resizeFactorDisplay = 1;
-        obj.outputConfig.savePhase = true;
-        obj.outputConfig.saveElev = false;
+    % Set properties in preparation for calibration.  
+        obj.setResizeFactor(1);
+        obj.setResizeFactorDisplay(1);
+        obj.outputConfig.phaseOutput = true;
+        obj.outputConfig.elevOutput = false;
     end
 
     function calibModeOff(obj)
-        obj.outputConfig.savePhase = false;
-        obj.outputConfig.saveElev = true;
+    % Switch off storage of phase and switch on storage of elevation. 
+        obj.outputConfig.phaseOutput = false;
+        obj.outputConfig.elevOutput = true;
     end
 
-    function setBurntPixelMask(obj, mask)
-        obj.prcOpts.burntPixelMask = mask;
-        [obj.prcOpts.interpPixelRows, ...
-            obj.prcOpts.interpPixelCols] = find(mask);
-    end
-
-    function readCameraCalibration(obj, calibAddr, camNumber)
-        [~, ~, ext] = fileparts(calibAddr);
+    function readCameraCalibration(obj, calibPath, camNumber)
+    % Read camera calibration from .mat or .xml file. 
+        [~, ~, ext] = fileparts(calibPath);
 
         if strcmpi(ext, '.mat')
-            obj.cameraCalib = load(calibAddr);
+            obj.cameraCalib = load(calibPath);
             obj.cameraCalib.type = "Pinhole";
 
             imSize = obj.cameraCalib.intrinsics.ImageSize;
@@ -666,7 +716,7 @@ methods (Access = public)
             obj.storePinholeScaling(scaling);
 
         elseif strcmpi(ext, '.xml')
-            calibCell = readDavisCalibration(calibAddr);
+            calibCell = readDavisCalibration(calibPath);
             calibData = calibCell{camNumber,1};
             calibType = calibCell{camNumber,2};
 
@@ -719,16 +769,16 @@ methods (Access = public)
             obj.cameraCalib.type = calibType;
         end
 
-        obj.cameraCalib.addr = calibAddr;
+        obj.cameraCalib.path = calibPath;
         obj.cameraCalib.camNum = camNumber;
     end
 
     function enableChunkedOutput(obj, chunkFolder, chunkLength)
-        % Hold results in memory in chunks and flush each to disk.
-        %   Store only chunks of chunkLength timesteps in memory. Temporary 
-        %   chunk files are saved to path chunkFolder/TEMP_chunks_<caseID>
-        %   and are merged into a single file when the user calls writeCase().
-        %   Temporary files are deleted after they are merged.
+    % Hold results in memory in chunks and flush each to disk.
+    %   Store only chunks of chunkLength timesteps in memory. Temporary 
+    %   chunk files are saved to path chunkFolder/TEMP_chunks_<caseID>
+    %   and are merged into a single file when the user calls writeCase().
+    %   Temporary files are deleted after they are merged.
         arguments
             obj
             chunkFolder string {mustBeFolder}
@@ -740,44 +790,46 @@ methods (Access = public)
     end
 
     function disableChunkedOutput(obj)
+    % Store entire output in memory.
         obj.outputConfig.chunkedOutput = false;
     end
 
     function writeCase(obj, addr)
-      if ~isfolder(fullfile(addr, obj.caseID))
-        mkdir(fullfile(addr, obj.caseID))
-      end
+    % Save FtpSolver object, data binaries and coordinate mesh to a folder named <caseID>.
+        if ~isfolder(fullfile(addr, obj.caseID))
+            mkdir(fullfile(addr, obj.caseID))
+        end
 
-      temp.(obj.caseID) = obj;
-      save(fullfile(addr, obj.caseID, obj.caseID + ".mat"), '-struct', 'temp')
-      obj.writeResultFiles(fullfile(addr, obj.caseID))
+        temp.(obj.caseID) = obj;
+        save(fullfile(addr, obj.caseID, obj.caseID + ".mat"), '-struct', 'temp')
+        obj.writeResultFiles(fullfile(addr, obj.caseID))
     end
 
     function [optInd, isSafeLine, peakLocsCell] = findOptimalPeakInd(obj, peakInd)
-        % Find which phase-correction peaks can be tracked inside the output frame.
-        %
-        %   [optInd, isSafeLine, peaksLineCell] = findOptimalPeakInd(obj, peakInd)
-        %
-        %   Detects the reference peak train on every phase-correction line and
-        %   determines which peaks lie inside the output (display) frame while
-        %   keeping a safety distance of pCorrOpts.edgeSafetyFactor pattern
-        %   periods from the starting edge, so that motion of the surface
-        %   cannot move the peak out of view. The first and last detected
-        %   peaks are never eligible because the local-wavelength stencil in
-        %   preprocessRefImage needs a neighbor on each side.
-        %
-        %   optInd        - recommended pCorrOpts.peakInd: the eligible peak
-        %                   closest to the starting edge, maximized over the
-        %                   lines so the choice is valid on all of them. NaN
-        %                   when no line has an eligible peak, or when the
-        %                   inputs listed under "prerequisites" below are not
-        %                   set.
-        %   isSafeLine    - per-line logical: true where the candidate peakInd
-        %                   is eligible. All false when peakInd is omitted or
-        %                   empty.
-        %   peakLocsCell  - detected peak positions per line, RAW-frame
-        %                   coordinates, flipped for startEdge 'right'/'bottom'
-        %
+    % Find which phase-correction peaks can be tracked inside the output frame.
+    %
+    %   [optInd, isSafeLine, peaksLineCell] = findOptimalPeakInd(obj, peakInd)
+    %
+    %   Detects the reference peak train on every phase-correction line and
+    %   determines which peaks lie inside the output (display) frame while
+    %   keeping a safety distance of pCorrOpts.edgeSafetyFactor pattern
+    %   periods from the starting edge, so that motion of the surface
+    %   cannot move the peak out of view. The first and last detected
+    %   peaks are never eligible because the local-wavelength stencil in
+    %   preprocessRefImage needs a neighbor on each side.
+    %
+    %   optInd        - recommended pCorrOpts.peakInd: the eligible peak
+    %                   closest to the starting edge, maximized over the
+    %                   lines so the choice is valid on all of them. NaN
+    %                   when no line has an eligible peak, or when the
+    %                   inputs listed under "prerequisites" below are not
+    %                   set.
+    %   isSafeLine    - per-line logical: true where the candidate peakInd
+    %                   is eligible. All false when peakInd is omitted or
+    %                   empty.
+    %   peakLocsCell  - detected peak positions per line, RAW-frame
+    %                   coordinates, flipped for startEdge 'right'/'bottom'
+    %
 
         if nargin < 2
             peakInd = [];
@@ -857,7 +909,7 @@ methods (Access = public)
     end
     
     function updateGeometry(obj)
-        % Recompute all resizeFactor-derived quantities
+    % Recompute all resizeFactor-derived quantities
         rf = obj.prcOpts.resizeFactor;
         rf_o = obj.prcOpts.resizeFactorDisplay;
 
@@ -985,7 +1037,47 @@ end
 
 %% ----------- Inspection and Visualization -----------
 methods (Access = public)
+    function showROI(obj)
+        % Draw the domain rectangles on the reference image.
+        % Overlays the computational domain (red), the unwrap margin (blue)
+        % and the display domain (green) for visual checking.
+
+        figure;
+        image = obj.imgData.refRaw;
+        image = rescale(image);
+
+        if ~isempty(obj.prcOpts.cropRectOrg)
+            image = insertShape(image, 'rectangle', obj.prcOpts.cropRectOrg, ...
+                'LineWidth', 5, 'ShapeColor', 'red');
+            image = insertText(image, obj.prcOpts.cropRectOrg(1:2), ...
+                'Computational domain', 'FontColor', 'red', 'FontSize', 20);
+            % draw unwrap margin
+            mg = obj.prcOpts.unwrapMarginOrg;
+            unwrapRect = obj.prcOpts.cropRectOrg + [mg, mg, -2*mg, -2*mg];
+            image = insertShape(image, 'rectangle', unwrapRect, ...
+                'LineWidth', 5, 'ShapeColor', 'blue');
+            image = insertText(image, unwrapRect(1:2) + [unwrapRect(3) 0], ...
+                'Unwrap margin', 'FontColor', 'blue', ...
+                'FontSize', 20, 'AnchorPoint', 'RightTop');
+        end
+
+        if ~isempty(obj.prcOpts.cropRectDisplayOrg)
+            absoluteCropDisplay = obj.prcOpts.cropRectDisplayOrg;
+            absoluteCropDisplay(1:2) = absoluteCropDisplay(1:2) + obj.prcOpts.cropRectOrg(1:2);
+            image = insertShape(image, 'rectangle', absoluteCropDisplay, ...
+                'LineWidth', 2, 'ShapeColor', 'green');
+            image = insertText(image, [absoluteCropDisplay(1), ...
+                absoluteCropDisplay(2) ...
+                + absoluteCropDisplay(4)], ...
+                'Display domain', 'FontColor', ...
+                'green', 'FontSize', 20, ...
+                'AnchorPoint', 'LeftBottom');
+        end
+        imshow(image, [])
+    end
+
     function [subarray, xCrop, yCrop] = getElevDisplaySubarray(obj, firstTimestep, lastTimestep)
+    % Crop the elevation stack to display frame and return.
         solveRange = obj.prcOpts.solveRange;
         [rowInds, colInds] = obj.outputInds();
         tRange = firstTimestep - solveRange(1) + 1:lastTimestep - solveRange(1) + 1; 
@@ -1000,6 +1092,7 @@ methods (Access = public)
     end
 
     function [subarray, xCrop, yCrop] = getPhaseDisplaySubarray(obj, firstTimestep, lastTimestep)
+    % Crop the phase stack to display frame and return.
         solveRange = obj.prcOpts.solveRange;
         [rowInds, colInds] = obj.outputInds();
         tRange = firstTimestep - solveRange(1) + 1:lastTimestep - solveRange(1) + 1; 
@@ -1014,13 +1107,13 @@ methods (Access = public)
     end
 
     function tseries = probeElev(obj, location, shape, operation)
-        % Elevation time series at a world location.
-        %   Finds the grid point nearest to the requested position; with a
-        %   size given, aggregates over a square or circular patch instead.
-        %   In:  location  - [x y] or [x y size] in world units (mm)
-        %        shape     - 'square' or 'circle' (only used with a size)
-        %        operation - 'min', 'mean' or 'max' over the patch
-        %   Out: tseries   - elevation versus frame
+    % Elevation time series at a location specified in world coordinates.
+    %   Finds the grid point nearest to the requested position; with a
+    %   size given, aggregates over a square or circular patch instead.
+    %   In:  location  - [x y] or [x y size] in world units (mm)
+    %        shape     - 'square' or 'circle' (only used with a size)
+    %        operation - 'min', 'mean' or 'max' over the patch
+    %   Out: tseries   - elevation versus frame
 
         if ~isequal(size(location), [1 2]) && ~isequal(size(location), [1 3])
             error("Probe target must be either a 1x2 or 1x3 vector.")
@@ -1077,20 +1170,20 @@ methods (Access = public)
     end
 
     function tseries = probePhase(obj, location, shape, operation)
-        % Phase time series at a world location.
-        %   Same addressing as probeElev, applied to phaseData.stack, so the
-        %   case must have been solved with savePhase on.
-        %   In:  location  - [x y] or [x y size] in world units (mm)
-        %        shape     - 'square' or 'circle' (only used with a size)
-        %        operation - 'min', 'mean' or 'max' over the patch
-        %   Out: tseries   - phase versus frame
+    % Phase time series at a location specified in world coordinates.
+    %   Same addressing as probeElev, applied to phaseData.stack, so the
+    %   case must have been solved with phaseOutput on.
+    %   In:  location  - [x y] or [x y size] in world units (mm)
+    %        shape     - 'square' or 'circle' (only used with a size)
+    %        operation - 'min', 'mean' or 'max' over the patch
+    %   Out: tseries   - phase versus frame
 
         if ~isequal(size(location), [1 2]) && ~isequal(size(location), [1 3])
             error("Probe target must be either a 1x2 or 1x3 vector.")
         end
 
-        if ~obj.outputConfig.savePhase
-            error("No phase data. Switch savePhase property on before running solve().")
+        if ~obj.outputConfig.phaseOutput
+            error("No phase data. Call setStoredOutputs(phase=true) before running solve().")
         end
 
         pitch = hypot(obj.worldCoords.mesh.x(1,2) - obj.worldCoords.mesh.x(1,1), ...
@@ -1141,17 +1234,17 @@ methods (Access = public)
     end
 
     function animate(obj, firstTimestep, lastTimestep, framerate, opts)
-        % Animate the reconstructed surface or phase.
-        %   Plots the surface elevation or phase (or an array passed in opts.data) frame
-        %   by frame, with optional plane/mean/constant subtraction, NaN-frame
-        %   interpolation, smoothing and a time or frame annotation.
-        %    
-        %   Example usage: animate(1, 200, 24, quantity="phase")
-        %   In:  firstTimestep, lastTimestep - frame range ([] = to the end)
-        %        framerate          - playback rate (fps)
-        %        opts               - name-value display options (data, ZLim,
-        %                             view, colormap, camFPS, subtractPlane,
-        %                             subtractMean, smoothing, ...)
+    % Animate the reconstructed surface or phase.
+    %   Plots the surface elevation or phase (or an array passed in opts.data) frame
+    %   by frame, with optional plane/mean/constant subtraction, NaN-frame
+    %   interpolation, smoothing and a time or frame annotation.
+    %    
+    %   Example usage: animate(1, 200, 24, quantity="phase")
+    %   In:  firstTimestep, lastTimestep - frame range ([] = to the end)
+    %        framerate          - playback rate (fps)
+    %        opts               - name-value display options (data, ZLim,
+    %                             view, colormap, camFPS, subtractPlane,
+    %                             subtractMean, smoothing, ...)
 
         arguments
             obj
@@ -1343,6 +1436,22 @@ methods (Access = public)
     end
 
     function exportVideo(obj, firstTimestep, lastTimestep, framerate, opts)
+    % Animate and export a video of the reconstructed surface or phase.
+    % Plots the surface elevation or phase (or an array passed in opts.data) frame
+    % by frame, with optional plane/mean/constant subtraction, NaN-frame
+    % interpolation, smoothing and a time or frame annotation. Exports to
+    % .mp4 format frame by frame if using the opts.fast option, or exports
+    % each frame to a .png image in a temporary folder for higher quality
+    % if opts.fast is off (default) and animates the images into a video at
+    % the end.
+    %    
+    % Example usage: exportVideo(1, 200, 24, quantity="phase")
+    %   Inputs:
+    %        firstTimestep, lastTimestep - frame range ([] = to the end)
+    %        framerate          - video framerate (fps)
+    %        opts               - name-value display options (data, ZLim,
+    %                             view, colormap, camFPS, subtractPlane,
+    %                             subtractMean, smoothing, ...)
         arguments
             obj
             firstTimestep = [];
@@ -1597,7 +1706,7 @@ methods (Access = public)
     end
 
     function animateImages(obj, firstTimestep, lastTimestep, framerate)
-        % Preprocess then animate the image sequence.
+    % Preprocess then animate the image sequence.
         arguments
             obj
             firstTimestep (1,1) double = obj.prcOpts.solveRange(1)
@@ -1634,7 +1743,7 @@ methods (Access = public)
     end
 
     function animateRawImages(obj, firstTimestep, lastTimestep, framerate)
-        % Rectify (if possible) the image sequence and then animate without additional preprocessing.
+    % Rectify (if possible) the image sequence and then animate without additional preprocessing.
         arguments
             obj
             firstTimestep (1,1) double = obj.prcOpts.solveRange(1)
@@ -1669,7 +1778,7 @@ methods (Access = public)
     end
 
     function imageCell = getRawImages(obj, firstTimestep, lastTimestep)
-        % Rectify and return the image sequence in a cell array without preprocessing.
+    % Rectify and return the image sequence in a cell array without preprocessing.
         arguments
             obj
             firstTimestep (1,1) double = obj.prcOpts.solveRange(1)
@@ -1686,7 +1795,7 @@ methods (Access = public)
     end
 
     function imageCell = getImages(obj, firstTimestep, lastTimestep)
-        % Preprocess and return the image sequence in a cell array.
+    % Preprocess and return the image sequence in a cell array.
         arguments
             obj
             firstTimestep (1,1) double = obj.prcOpts.solveRange(1)
@@ -1703,9 +1812,9 @@ methods (Access = public)
     end
 
     function drawPeaks(obj, firstTimestep, lastTimestep, skip)
-        % Diagnostic plot of phase-correction peak detection.
-        % Shows the reference line with its detected peaks and the tracked
-        % peak highlighted, then the same line in the requested images.
+    % Diagnostic plot of phase-correction peak detection.
+    % Shows the reference line with its detected peaks and the tracked
+    % peak highlighted, then the same line in the requested images.
         if ~exist('skip', 'var')
             skip = 1;
         end
@@ -1809,23 +1918,25 @@ end
 %% ----------- Internal methods -----------
 methods (Access = private)
     function initParams(obj)
-        % Reset loop state and preallocate arrays used by solve().
-        %   Refreshes the geometry (and the camera mesh of a reloaded case),
-        %   preallocates the elevation/phase stacks for the whole run or
-        %   for one chunk and resamples the polynomial calibration onto the
-        %   computational grid.
+    % Reset loop state and preallocate arrays used by solve().
+    %   Refreshes the geometry (and the camera mesh of a reloaded case),
+    %   preallocates the elevation/phase stacks for the whole run or
+    %   for one chunk and resamples the polynomial calibration onto the
+    %   computational grid.
 
-        if obj.outputConfig.saveElev && strcmpi(obj.elevModel.type, 'none')
-            error("saveElev is on but no elevation model is set.")
+        if obj.outputConfig.elevOutput && strcmpi(obj.elevModel.type, 'none')
+            error("Elevation output is on but no elevation model is set." + ...
+                   "Call setElevModelTakeda or setElevModelPoly, or " + ...
+                   "setStoredOutputs(elev=false).")
         end
 
         if isempty(obj.fringe.periodOrg) || isnan(obj.fringe.periodOrg)
             error("Missing data: fringe.period")
         end
 
-        if ~obj.outputConfig.saveImages ...
-                && ~obj.outputConfig.savePhase ...
-                && ~obj.outputConfig.saveElev ...
+        if ~obj.outputConfig.imageOutput ...
+                && ~obj.outputConfig.phaseOutput ...
+                && ~obj.outputConfig.elevOutput ...
                 && (diff(obj.prcOpts.solveRange) + 1 > 1)
             error("All storage switches are off. Check outputConfig.")
         end
@@ -1844,12 +1955,12 @@ methods (Access = private)
 
         % refresh coordinate mesh if running a case loaded from a .mat file
         if isfield(obj.cameraCalib, 'addr') && ~isfield(obj.worldCoords.mesh, 'xOrg')
-            if strlength(obj.cameraCalib.addr) > 0 && strcmpi(obj.cameraCalib.type, 'Pinhole')
-                obj.readCameraCalibration(obj.cameraCalib.addr, obj.cameraCalib.camNum);
+            if strlength(obj.cameraCalib.path) > 0 && strcmpi(obj.cameraCalib.type, 'Pinhole')
+                obj.readCameraCalibration(obj.cameraCalib.path, obj.cameraCalib.camNum);
             end
         end
         % refresh images if running a case loaded from a .mat file
-        if strlength(obj.source.refAddr) > 0 && isempty(obj.imgData.refRaw)
+        if strlength(obj.source.refPath) > 0 && isempty(obj.imgData.refRaw)
             obj.initImages();
         end
         obj.updateGeometry();
@@ -1863,7 +1974,7 @@ methods (Access = private)
         
         % initialize polynomial calibration model
         [Ny, Nx] = size(obj.imgData.refRaw);
-        if obj.outputConfig.saveElev && strcmpi(obj.elevModel.type, 'poly')
+        if obj.outputConfig.elevOutput && strcmpi(obj.elevModel.type, 'poly')
             if obj.elevModel.pixelwise
                 coeffMat = imresize(obj.elevModel.poly.coeffMatOrg, ...
                                     rf, 'bilinear', Antialiasing=false);
@@ -1892,9 +2003,9 @@ methods (Access = private)
     end
 
     function allocateStacks(obj, nTimesteps)
-        % Preallocate the result stacks for nTimesteps.
-        %   Allocates a NaN-filled single-precision stack for every quantity
-        %   whose save switch is on and clears the others.
+    % Preallocate the result stacks for nTimesteps.
+    %   Allocates a NaN-filled single-precision stack for every quantity
+    %   whose output switch is on and clears the others.
     
         [NyImg, NxImg] = size(obj.imgData.ref);
         rf_o = obj.prcOpts.resizeFactorDisplay;
@@ -1905,24 +2016,23 @@ methods (Access = private)
         obj.elevData.stack  = [];
         obj.imgData.stack   = [];
     
-        if obj.outputConfig.savePhase
+        if obj.outputConfig.phaseOutput
             obj.phaseData.stack = nan(NyStack, NxStack, nTimesteps, 'single');
         end
-        if obj.outputConfig.saveElev
+        if obj.outputConfig.elevOutput
             obj.elevData.stack = nan(NyStack, NxStack, nTimesteps, 'single');
         end
-        if obj.outputConfig.saveImages
+        if obj.outputConfig.imageOutput
             obj.imgData.stack = nan(NyImg, NxImg, nTimesteps, 'single');
         end
     end
 
     function preprocessRefImage(obj)
-        % Prepare the reference image and the spatial
-        %   phase-correction reference.
-        %   Crops the scaled reference to the computational domain, removes
-        %   the DC component, and for spatial phase correction selects or
-        %   validates pCorrOpts.peakInd and measures the local fringe
-        %   wavelength and reference peak position on every correction line.
+    % Prepare the reference image and the spatial phase-correction reference.
+    %   Crops the scaled reference to the computational domain, removes
+    %   the DC component, and for spatial phase correction selects or
+    %   validates pCorrOpts.peakInd and measures the local fringe
+    %   wavelength and reference peak position on every correction line.
 
         obj.imgData.ref = imcrop(obj.imgData.refScaled, obj.prcOpts.cropRect);
 
@@ -1962,8 +2072,7 @@ methods (Access = private)
                     warning("Peak %g is missing or does not lie safely inside the output frame " + ...
                         "on phase-correction line(s) %s. Optimal peak number: %g (closest usable " + ...
                         "peak to the '%s' edge with a safety margin of %.3g fringe periods). " + ...
-                        "Set obj.pCorrOpts.peakInd = %g and rerun, or set it to [] to select " + ...
-                        "the optimal peak automatically.", ...
+                        "Call setTrackedPeakInd(%g), or setTrackedPeakInd([]) to select the peak automatically.", ...
                         obj.pCorrOpts.peakInd, lineStr, optInd, obj.pCorrOpts.startEdge, ...
                         obj.pCorrOpts.edgeSafetyFactor, optInd)
                 end
@@ -2003,12 +2112,12 @@ methods (Access = private)
     end
 
     function invalidFrame = preprocessCurrentImage(obj)
-        % Bring imgData.curr into the computational frame.
-        %   Interpolates bad pixels, applies the camera calibration
-        %   (polynomial dewarp or pinhole undistort + rectify), flags the
-        %   frame for discarding, locates the spatial phase-correction peaks
-        %   in the RAW frame, then resizes, crops and removes the DC
-        %   component.
+    % Bring imgData.curr into the computational frame.
+    %   Interpolates bad pixels, applies the camera calibration
+    %   (polynomial dewarp or pinhole undistort + rectify), flags the
+    %   frame for discarding, locates the spatial phase-correction peaks
+    %   in the RAW frame, then resizes, crops and removes the DC
+    %   component.
 
         obj.imgData.curr = obj.rectify(obj.imgData.curr);
         cropRectOrg = obj.prcOpts.cropRectOrg;
@@ -2057,8 +2166,8 @@ methods (Access = private)
     end
 
     function demodulateRef(obj)
-        if strcmpi(obj.demodOpts.method, 'FT')
-            obj.demodulateRefFT();
+        if strcmpi(obj.demodOpts.method, 'fourier')
+            obj.demodulateRefFourier();
         elseif strcmpi(obj.demodOpts.method, 'wavelet')
             obj.demodulateRefWavelet();
         else
@@ -2067,8 +2176,8 @@ methods (Access = private)
     end
 
     function demodulate(obj)
-        if strcmpi(obj.demodOpts.method, 'FT')
-            obj.demodulateFT();
+        if strcmpi(obj.demodOpts.method, 'fourier')
+            obj.demodulateFourier();
         elseif strcmpi(obj.demodOpts.method, 'wavelet')
             obj.demodulateWavelet();
         else
@@ -2076,13 +2185,13 @@ methods (Access = private)
         end
     end
 
-    function demodulateRefFT(obj)
-        % Precompute all reference-dependent quantities for FT demodulation.
-        %
-        % Sets:
-        %   obj.phaseData.bandpassFilter   - super-Gaussian band-pass centered on carrier
-        %   obj.phaseData.refComplexCoeffs - band-passed complex reference signal,
-        %                                    hI0 = ifft2(filter .* fft2(I0))
+    function demodulateRefFourier(obj)
+    % Precompute all reference-dependent quantities for FT demodulation.
+    %
+    % Sets:
+    %   obj.phaseData.bandpassFilter   - super-Gaussian band-pass centered on carrier
+    %   obj.phaseData.refComplexCoeffs - band-passed complex reference signal,
+    %                                    hI0 = ifft2(filter .* fft2(I0))
 
         [ny, nx] = size(obj.imgData.ref);
 
@@ -2104,11 +2213,11 @@ methods (Access = private)
             ifft2(obj.phaseData.bandpassFilter .* fft2(obj.imgData.ref));
     end
 
-    function demodulateFT(obj)
-        % Find the phase of the current image relative to the reference.
-        % The band-pass filter and the complex reference coefficients are 
-        % precomputed by demodulateRefFT. Only the current image is
-        % processed here.
+    function demodulateFourier(obj)
+    % Find the phase of the current image relative to the reference.
+    % The band-pass filter and the complex reference coefficients are 
+    % precomputed by demodulateRefFourier. Only the current image is
+    % processed here.
 
         % Band-pass and inverse transform
         hI = ifft2(obj.phaseData.bandpassFilter .* fft2(obj.imgData.curr));
@@ -2124,12 +2233,12 @@ methods (Access = private)
     end
 
     function demodulateRefWavelet(obj)
-        % Wavelet ridge of the reference image.
-        %   Runs the Morlet CWT over demodOpts.scaleList/angleList, picks the
-        %   maximum-amplitude (scale, angle) per pixel, smooths that ridge and
-        %   interpolates the complex coefficients between the four
-        %   neighboring (scale, angle) planes. Result is stored in
-        %   phaseData.refComplexCoeffs.
+    % Wavelet ridge of the reference image.
+    %   Runs the Morlet CWT over demodOpts.scaleList/angleList, picks the
+    %   maximum-amplitude (scale, angle) per pixel, smooths that ridge and
+    %   interpolates the complex coefficients between the four
+    %   neighboring (scale, angle) planes. Result is stored in
+    %   phaseData.refComplexCoeffs.
 
         [Ny, Nx] = size(obj.imgData.ref);
         % Demodulate reference image
@@ -2186,10 +2295,10 @@ methods (Access = private)
     end
 
     function demodulateWavelet(obj)
-        % Wavelet phase of the current frame.
-        %   Same ridge extraction and bilinear (scale, angle) interpolation as
-        %   demodulateRefWavelet, applied to imgData.curr; phaseData.curr is
-        %   set to the phase relative to the reference coefficients.
+    % Wavelet phase of the current frame.
+    %   Same ridge extraction and bilinear (scale, angle) interpolation as
+    %   demodulateRefWavelet, applied to imgData.curr; phaseData.curr is
+    %   set to the phase relative to the reference coefficients.
 
         [Ny, Nx] = size(obj.imgData.curr);
     
@@ -2271,18 +2380,18 @@ methods (Access = private)
 
     function [phaseCrop, heightVec, weights, geom] = prepareCalibrationData( ...
             obj, heightVec, excludeHeights, weights)
-        % Check and trim the calibration data and compute
-        %   the calibration-region geometry.
-        %
-        %   Returns:
-        %     phaseCrop - phase stack restricted to the calibration region and
-        %                 to the retained heights (range applied, excluded and
-        %                 zero heights removed)
-        %     heightVec - matching column vector of heights
-        %     weights   - matching column vector of fit weights
-        %     geom      - geometry struct: calibRect (crop frame), rawRect (RAW
-        %                 frame), embedRows/embedCols, pixel meshes, cropRect,
-        %                 rawSize
+    % Check and trim the calibration data and compute
+    %   the calibration-region geometry.
+    %
+    %   Returns:
+    %     phaseCrop - phase stack restricted to the calibration region and
+    %                 to the retained heights (range applied, excluded and
+    %                 zero heights removed)
+    %     heightVec - matching column vector of heights
+    %     weights   - matching column vector of fit weights
+    %     geom      - geometry struct: calibRect (crop frame), rawRect (RAW
+    %                 frame), embedRows/embedCols, pixel meshes, cropRect,
+    %                 rawSize
     
         if obj.prcOpts.resizeFactor ~= 1 || obj.prcOpts.resizeFactorDisplay ~= 1
             error("Run solve() with resizeFactor and resizeFactorDisplay set to 1")
@@ -2328,12 +2437,12 @@ methods (Access = private)
     end
 
     function unwrapAndFlag(obj)
-        % Unwrap the current phase map and flag anomalies.
-        %   Unwraps phaseData.curr row-wise then column-wise inside the
-        %   unwrap margin (optionally refining with unwrap2D), detects
-        %   residual gradient outliers, records their bounding boxes in
-        %   postData.phaseAnomalies for the current frame, and finally
-        %   resizes the phase map to the output frame.
+    % Unwrap the current phase map and flag anomalies.
+    %   Unwraps phaseData.curr row-wise then column-wise inside the
+    %   unwrap margin (optionally refining with unwrap2D), detects
+    %   residual gradient outliers, records their bounding boxes in
+    %   postData.phaseAnomalies for the current frame, and finally
+    %   resizes the phase map to the output frame.
 
         if ~obj.prcOpts.unwrapEnabled
             obj.phaseData.curr = imresize(obj.phaseData.curr, ...
@@ -2440,13 +2549,13 @@ methods (Access = private)
     end
 
     function correctPhase(obj)
-        % Remove 2*pi ambiguities from the current phase map.
-        %   'temporal': adds the modal 2*pi jump between this frame and the
-        %   previous one, measured at three interior points. 'spatial': uses
-        %   the tracked fringe peak on each correction line to predict the
-        %   true phase there and adds the modal 2*pi offset. Frames where the
-        %   estimate is unreliable are listed in pCorrOpts.warningTimesteps
-        %   and left uncorrected.
+    % Remove 2*pi ambiguities from the current phase map.
+    %   'temporal': adds the modal 2*pi jump between this frame and the
+    %   previous one, measured at three interior points. 'spatial': uses
+    %   the tracked fringe peak on each correction line to predict the
+    %   true phase there and adds the modal 2*pi offset. Frames where the
+    %   estimate is unreliable are listed in pCorrOpts.warningTimesteps
+    %   and left uncorrected.
 
         if strcmpi(obj.pCorrOpts.method, 'none')
             return
@@ -2477,7 +2586,7 @@ methods (Access = private)
             if obj.loopState.isFirstTimestep
                 return
             end
-            % [jump, frequency] = mode(phaseDiffTemporal);
+
             if temporalJump ~= 0
                 obj.phaseData.curr = obj.phaseData.curr + temporalJump;
             end
@@ -2561,7 +2670,8 @@ methods (Access = private)
     end
 
     function calculateElevation(obj)
-        if ~obj.outputConfig.saveElev || strcmpi(obj.elevModel.type, 'none')
+    % Calculates the surface elevation based on the selected model.
+        if ~obj.outputConfig.elevOutput || strcmpi(obj.elevModel.type, 'none')
             return
         end
 
@@ -2649,7 +2759,7 @@ methods (Access = private)
     end
 
     function storeData(obj)
-        if obj.outputConfig.savePhase
+        if obj.outputConfig.phaseOutput
             if obj.loopState.invalidFrame
                 obj.phaseData.stack(:,:,obj.loopState.stackInd) = nan;
             else
@@ -2657,7 +2767,7 @@ methods (Access = private)
             end
         end
 
-        if obj.outputConfig.saveElev
+        if obj.outputConfig.elevOutput
             if obj.loopState.invalidFrame
                 obj.elevData.stack(:,:,obj.loopState.stackInd) = nan;
             else
@@ -2665,7 +2775,7 @@ methods (Access = private)
             end
         end          
 
-        if obj.outputConfig.saveImages
+        if obj.outputConfig.imageOutput
             obj.imgData.stack(:,:,obj.loopState.stackInd) = obj.imgData.curr;
         end
     end
@@ -2688,16 +2798,16 @@ methods (Access = private)
     function writeResultFiles(obj, addr)
         solveRange = obj.prcOpts.solveRange;
         if obj.outputConfig.chunkedOutput
-            if obj.outputConfig.saveElev
+            if obj.outputConfig.elevOutput
                 obj.mergeChunkFiles("elevData", ...
                     fullfile(addr, obj.caseID + "_elevData.bin"));
             end
-            if obj.outputConfig.savePhase
+            if obj.outputConfig.phaseOutput
                 obj.mergeChunkFiles("phaseData", ...
                     fullfile(addr, obj.caseID + "_phaseData.bin"));
             end
         else
-            if obj.outputConfig.saveElev
+            if obj.outputConfig.elevOutput
                 filename = fullfile(addr, obj.caseID + "_elevData.bin");
 
                 displayArr = obj.getElevDisplaySubarray(solveRange(1), solveRange(2));
@@ -2705,7 +2815,7 @@ methods (Access = private)
                 FtpSolver.writeTimeSeriesBinary(filename, displayArr);
             end
 
-            if obj.outputConfig.savePhase
+            if obj.outputConfig.phaseOutput
                 filename = fullfile(addr, obj.caseID + "_phaseData.bin");
 
                 [displayArr, ~, ~] = obj.getPhaseDisplaySubarray(solveRange(1), solveRange(2));
@@ -2728,10 +2838,10 @@ methods (Access = private)
     end
     
     function writeChunk(obj)
-        % Write the chunk held in memory to the chunk folder.
-        %   Writes the output subarray of the elevation and phase stacks for
-        %   the current chunk to one file each, then reallocates the stacks
-        %   for the next chunk unless this was the last one.
+    % Write the chunk held in memory to the chunk folder.
+    %   Writes the output subarray of the elevation and phase stacks for
+    %   the current chunk to one file each, then reallocates the stacks
+    %   for the next chunk unless this was the last one.
 
         folder = obj.caseChunkFolder();
         if ~isfolder(folder)
@@ -2744,7 +2854,7 @@ methods (Access = private)
         nTimesteps = diff(solveRange) + 1;
         nChunks = ceil(nTimesteps / chunkLength);
 
-        if obj.outputConfig.saveElev
+        if obj.outputConfig.elevOutput
             chunkFilename = obj.chunkFilePath(chunkIndex, "elevData");
 
             chunkArr = obj.getElevDisplaySubarray(solveRange(1), ...
@@ -2753,7 +2863,7 @@ methods (Access = private)
             FtpSolver.writeTimeSeriesBinary(chunkFilename, chunkArr);
         end
 
-        if obj.outputConfig.savePhase
+        if obj.outputConfig.phaseOutput
             chunkFilename = obj.chunkFilePath(chunkIndex, "phaseData");
 
             chunkArr = obj.getPhaseDisplaySubarray(solveRange(1), ...
@@ -2789,7 +2899,7 @@ methods (Access = private)
     function mergeChunkFiles(obj, quantity, outFile)
         % Concatenate the chunk files of one quantity to a single file.
         %   Checks every chunk file of a chunked run, then writes them in
-        %   chunk order to outFile as one binary in the readData format,
+        %   chunk order to outFile as one binary in the readBinary format,
         %   with dimensions [Ny Nx nTimesteps]. Nothing is written if a 
         %   chunk is missing, has a different frame size, or the chunks do
         %   not add up to the timesteps in solveRange.
@@ -2831,7 +2941,7 @@ methods (Access = private)
 
         FtpSolver.writeBinaryHeader(outID, [frameSize, nTimesteps])
         for k = 1:nChunks
-            fwrite(outID, FtpSolver.readData(chunkFiles(k)), 'single');
+            fwrite(outID, FtpSolver.readBinary(chunkFiles(k)), 'single');
         end
     end
 
@@ -2842,15 +2952,8 @@ methods (Access = private)
         %   listing from the stored paths, rebuilds the geometry, and
         %   reloads the polynomial calibration when the case used one.
 
-        obj.loadRefImage(obj.source.refAddr);
-
-        if isstruct(obj.source.dataAddr)
-            field = obj.source.dataAddr(1);
-            addr = fullfile(field.folder, field.name);
-            obj.loadDataset(addr)
-        else
-            obj.loadDataset(obj.source.dataAddr)
-        end
+        obj.loadRefImage(obj.source.refPath);
+        obj.loadDataset(obj.source.dataPath);
 
         obj.scaleAndTransformRef();
         if strcmpi(obj.elevModel.type, 'poly') && isfield(obj.elevModel, 'polyAddr')
@@ -2890,8 +2993,8 @@ methods (Access = private)
 
     function imgOut = interpBurntPixels(obj, img)
         if strcmpi(obj.prcOpts.interpBurntPixelMethod, 'fastLinear')
-            imgOut = obj.fastFill(img, obj.prcOpts.interpPixelRows, ...
-                obj.prcOpts.interpPixelCols);
+            imgOut = obj.fastFill(img, obj.prcOpts.burntPixelRows, ...
+                obj.prcOpts.burntPixelCols);
         elseif strcmpi(obj.prcOpts.interpBurntPixelMethod, 'smooth')
             imgOut = regionfill(img, obj.prcOpts.burntPixelMask);
         end
@@ -3023,74 +3126,97 @@ methods (Access = private)
     end
 
     function img = loadImage(obj, timestep)
-        if strcmpi(obj.source.dataFiletype, 'im7') % read from Davis im7 images
-            addr = fullfile(obj.source.dataAddr(timestep).folder, ...
-                obj.source.dataAddr(timestep).name);
-            img = obj.getDavisFrame(addr, obj.source.dataCamInd);
-        elseif  strcmpi(obj.source.dataFiletype, 'set')  % read from Davis set file
-            img = obj.getDavisFrame(obj.source.dataAddr, obj.source.dataCamInd, timestep);
-        else
-            img = imread(fullfile(...
-                obj.source.dataAddr(timestep).folder, ...
-                obj.source.dataAddr(timestep).name ...
-                ) ...
-                );
+    % Read frame timestep of the dataset as a double image.
+        switch obj.source.dataFormat
+            case "set"
+                img = obj.getDavisFrame(obj.source.dataPath, obj.source.dataCamInd, timestep);
+            case "im7"
+                img = obj.getDavisFrame(obj.source.frameFiles(timestep), obj.source.dataCamInd);
+            case "image"
+                img = imread(obj.source.frameFiles(timestep));
+            otherwise
+                error("No dataset loaded.")
         end
-
         img = double(img);
-    end 
+    end
 
-    function loadRefImage(obj, refAddr)
-        % Read the reference image into imgData.refRaw
-        % Averages over the whole set if given a Davis .set file
-        obj.source.refAddr = refAddr;
-        [~, ~, refExt] = fileparts(refAddr);
-        refExt = lower(extractAfter(refExt, '.'));
-        obj.source.refFiletype = refExt;
-
-        if strcmpi(refExt, 'set') 
-            obj.imgData.refRaw = obj.getDavisFrame(obj.source.refAddr, obj.source.refCamInd, 'avg');
-        elseif strcmpi(refExt, 'im7')
-            obj.imgData.refRaw = obj.getDavisFrame(obj.source.refAddr, obj.source.refCamInd);
-        elseif ismember(refExt, [imformats().ext])
-            obj.imgData.refRaw = imread(obj.source.refAddr);
+    function loadRefImage(obj, refPath)
+    % Read the reference image into imgData.refRaw.
+    %   Averages over the whole set if given a Davis .set file.
+        refPath = FtpSolver.absolutePath(refPath);
+        obj.source.refPath = refPath;
+        [~, ~, ext] = fileparts(refPath);
+    
+        if strcmpi(ext, ".set")
+            img = obj.getDavisFrame(refPath, obj.source.refCamInd, 'avg');
+        elseif strcmpi(ext, ".im7")
+            img = obj.getDavisFrame(refPath, obj.source.refCamInd);
+        elseif ismember(lower(extractAfter(ext, ".")), [imformats().ext])
+            img = imread(refPath);
         else
             error("Invalid file type for reference image.")
         end
-
-        obj.imgData.refRaw = double(obj.imgData.refRaw);
-
+        obj.imgData.refRaw = double(img);
     end
-
-    function loadDataset(obj, dataAddr)
-        % Store the location of the image set.
-        %   Stores either the .set file path or a dir() listing of all
-        %   .im7/image files in the same folder. Sets source.fullRange
-        %   from the number of frames found and initializes solveRange when 
-        %   empty.
-        %   In:  dataAddr - path to a .set file or to one file of the sequence
-
-        [filepath, ~, dataExt] = fileparts(dataAddr);
-        dataExt = lower(extractAfter(dataExt, '.'));
-        obj.source.dataFiletype = dataExt;
-
-        if strcmpi(dataExt, 'set') 
-            obj.source.dataAddr = convertStringsToChars(dataAddr);
-            obj.source.fullRange = [1, lvsetsize(obj.source.dataAddr)];
-        elseif strcmpi(dataExt, 'im7')
-            obj.source.dataAddr = dir(fullfile(filepath, '*.im7'));
-            obj.source.fullRange = [1, length(obj.source.dataAddr)];
-        elseif ismember(dataExt, [imformats().ext])
-            obj.source.dataAddr = dir(fullfile(filepath, "*." + dataExt));
-            obj.source.fullRange = [1, length(obj.source.dataAddr)];
+    
+    function loadDataset(obj, dataPath)
+    % Record where the frames of the dataset are.
+    %   dataPath - a Davis .set file, or any one file of an image sequence.
+    %              Every other file with the same extension in that folder
+    %              is treated as a frame, in file-name order.
+        dataPath = FtpSolver.absolutePath(dataPath);
+        [folder, ~, ext] = fileparts(dataPath);
+        obj.source.dataPath = dataPath;
+    
+        if strcmpi(ext, ".set")
+            obj.source.dataFormat = "set";
+            obj.source.frameFiles = strings(0, 1);
+            nFrames = lvsetsize(char(dataPath));
         else
-            error("Invalid file type for dataset.")
+            if strcmpi(ext, ".im7")
+                obj.source.dataFormat = "im7";
+            elseif ismember(lower(extractAfter(ext, ".")), [imformats().ext])
+                obj.source.dataFormat = "image";
+            else
+                error("Invalid file type for dataset.")
+            end
+            obj.source.frameFiles = obj.listFrameFiles(folder, ext);
+            nFrames = numel(obj.source.frameFiles);
         end
-
+    
+        obj.source.fullRange = [1, nFrames];
         if isempty(obj.prcOpts.solveRange)
             obj.prcOpts.solveRange = obj.source.fullRange;
         end
-    end    
+    end
+    
+    function files = listFrameFiles(obj, folder, ext)
+    % Full paths of the frame files in folder, in file-name order.
+        % keep the extension's original case so the pattern matches on
+        % case-sensitive file systems
+        listing = dir(fullfile(folder, "*" + ext));
+        listing = listing(~[listing.isdir]);
+        files = fullfile(string({listing.folder}), string({listing.name}))';
+    
+        % warn if the reference image is in the data sequence
+        isRef = strcmpi(files, obj.source.refPath);
+        if any(isRef)
+            warning("The reference image is in the data folder and is " + ...
+                "included as frame %d.", find(isRef))
+        end
+    
+        if isempty(files)
+            error("No %s files found in %s.", ext, folder)
+        end
+    
+        % names of different lengths usually mean unpadded frame numbers,
+        % which text order puts out of sequence (1, 10, 2, ...)
+        names = string({listing(~isRef).name});
+        if numel(unique(strlength(names))) > 1
+            warning("Frame file names differ in length, so file-name order " + ...
+                "may not be frame order. Zero-pad the frame numbers.")
+        end
+    end
 
     function savedObj = saveobj(obj)
         savedObj.caseID = obj.caseID;
@@ -3118,13 +3244,13 @@ end
 %% ----------- Property initialization and static helpers -----------
 methods (Access = private, Static)
     function output = defaultSource()
-        output.dataAddr = "";
-        output.refAddr = "";
-        output.refFiletype = "";
-        output.dataFiletype = "";
-        output.fullRange = [];
+        output.dataPath   = "";
+        output.dataFormat = "";
+        output.frameFiles = strings(0, 1);
+        output.refPath    = "";
+        output.fullRange  = [];
         output.dataCamInd = 1;
-        output.refCamInd = 1;
+        output.refCamInd  = 1;
     end
 
     function output = defaultImgData()
@@ -3155,7 +3281,7 @@ methods (Access = private, Static)
     end
 
     function output = defaultDemodOpts()
-        output.method = "FT";
+        output.method = "fourier";
         output.scaleList = [];
         output.angleList = 0;
         output.sigma = 0.6;
@@ -3189,8 +3315,8 @@ methods (Access = private, Static)
         output.smoothRefImg = false;
         output.interpBurntPixelMethod = 'fastLinear';
         output.burntPixelMask = [];
-        output.interpPixelRows = [];
-        output.interpPixelCols = [];
+        output.burntPixelRows = [];
+        output.burntPixelCols = [];
         output.cropRectOrg = [];
         output.cropRect = [];
         output.cropRectDisplayOrg = [];
@@ -3210,6 +3336,7 @@ methods (Access = private, Static)
 
     function output = defaultCameraCalib()
         output.type = "none";
+        output.path = "";
         output.X.Unit = 'pixel';
         output.X.SlopeOrg = 1;
         output.X.Offset = 0;
@@ -3232,9 +3359,9 @@ methods (Access = private, Static)
     end
 
     function output = defaultOutputConfig()
-        output.savePhase = false;
-        output.saveImages = false;
-        output.saveElev = true;
+        output.phaseOutput = false;
+        output.imageOutput = false;
+        output.elevOutput = true;
         output.reportProgressEnabled = true;
         output.chunkedOutput = false;
         output.chunkLength = 1000;
@@ -3284,9 +3411,9 @@ methods (Access = private, Static)
     end
 
     function delta = quadPeakOffset(fm, f0, fp)
-        % Sub-bin offset of a spectral peak from its neighbors
-        %   Fits a parabola through log-magnitudes at bins [-1, 0, +1] and
-        %   returns the vertex position in [-0.5, 0.5]
+    % Sub-bin offset of a spectral peak from its neighbors
+    %   Fits a parabola through log-magnitudes at bins [-1, 0, +1] and
+    %   returns the vertex position in [-0.5, 0.5]
         a = log(max(fm, realmin));
         b = log(max(f0, realmin));
         c = log(max(fp, realmin));
@@ -3299,6 +3426,7 @@ methods (Access = private, Static)
     end
 
     function imgOut = fastFill(img, interpRows, interpCols)
+    % Replace pixels with values interpolated from neighbors. 
         imgOut = img;
 
         for i = 1:length(interpRows)
@@ -3345,17 +3473,17 @@ methods (Access = private, Static)
     end
 
     function [image, scaling] = getDavisFrame(addr, camInd, timestep)
-        % Read one frame (or the set average) from a Davis file.
-        %   Undoes the zero padding and area-of-interest offset that Davis
-        %   applies, using the RealFrameSize/AOIused/CameraMaxNx attributes.
-        %   Inputs:
-        %       addr     - path to the .set or .im7 file
-        %       camInd   - camera index in the buffer
-        %       timestep - set index, 0/omitted for a single image, or
-        %                   'avg' to average the whole set
-        %   Outputs:
-        %       image   - image array
-        %       scaling - Davis scaling struct of the last frame read
+    % Read one frame (or the set average) from a Davis file.
+    %   Undoes the zero padding and area-of-interest offset that Davis
+    %   applies, using the RealFrameSize/AOIused/CameraMaxNx attributes.
+    %   Inputs:
+    %       addr     - path to the .set or .im7 file
+    %       camInd   - camera index in the buffer
+    %       timestep - set index, 0/omitted for a single image, or
+    %                   'avg' to average the whole set
+    %   Outputs:
+    %       image   - image array
+    %       scaling - Davis scaling struct of the last frame read
 
         addr = convertStringsToChars(addr);
 
@@ -3433,6 +3561,15 @@ methods (Access = private, Static)
         scaling.X.SlopeOrg = scaling.X.Slope;
         scaling.Y.SlopeOrg = scaling.Y.Slope;
     end
+
+    function p = absolutePath(p)
+        % Full path of an existing file, resolving relative paths and "..".
+        info = dir(p);
+        if numel(info) ~= 1 || info.isdir
+            error("File not found: %s", p)
+        end
+        p = string(fullfile(info.folder, info.name));
+    end
 end
 
 %% ----------- Public static helpers -----------
@@ -3460,39 +3597,52 @@ methods(Static)
         end
     end
 
-    function [data, dataSizeAll] = readData(addr, seekTime)
-            if ~exist('addr', 'var')
-                [file, path] = uigetfile('*.bin');
-                addr = fullfile(path, file);
+    function [data, dataSizeAll] = readBinary(addr, seekTime)
+    % Read back binary data file created by the class.
+    % Inputs:
+    %       addr -      Path to the binary file. 
+    %       seekTime -  (1x2) vector of timesteps to return in the format
+    %                   [firstTimestep lastTimestep]. Reads the full binary
+    %                   if not specified.
+    % Outputs:
+    %       data -          The data array.
+    %       dataSizeAll -   The dimensions of the the full binary array.
+    %
+        if ~exist('addr', 'var')
+            [file, path] = uigetfile('*.bin');
+            addr = fullfile(path, file);
+        end
+        fID = fopen(addr, 'rb');
+        closeIn = onCleanup(@() fclose(fID));
+
+        numDim = fread(fID, 1, 'uint32');
+        dataSize = fread(fID, numDim, 'uint32');
+        dataSize = dataSize';
+        dataSizeAll = dataSize;
+
+        if exist('seekTime', 'var')
+            if dataSize(end) < seekTime(2)
+                error("Requested timestep %g exceeds number of timesteps in array (%g).", seekTime(2), dataSize(end))
             end
-            fID = fopen(addr, 'rb');
-            closeIn = onCleanup(@() fclose(fID));
+            dataSize(end) = seekTime(2) - seekTime(1) + 1;
+            % assumes single precision (4 bytes)
+            pageElements = prod(dataSize(1:end - 1));
+            skipLength = 4*pageElements*(seekTime(1) - 1);
+            readElements = pageElements*(seekTime(2) - seekTime(1) + 1);
+            % skip to seekTime(1)
+            fseek(fID, skipLength, 'cof');
+            data = fread(fID, readElements, '*single');
+        else
+            data = fread(fID, '*single');
+        end
 
-            numDim = fread(fID, 1, 'uint32');
-            dataSize = fread(fID, numDim, 'uint32');
-            dataSize = dataSize';
-            dataSizeAll = dataSize;
-
-            if exist('seekTime', 'var')
-                if dataSize(end) < seekTime(2)
-                    error("Requested timestep %g exceeds number of timesteps in array (%g).", seekTime(2), dataSize(end))
-                end
-                dataSize(end) = seekTime(2) - seekTime(1) + 1;
-                % assumes single precision (4 bytes)
-                pageElements = prod(dataSize(1:end - 1));
-                skipLength = 4*pageElements*(seekTime(1) - 1);
-                readElements = pageElements*(seekTime(2) - seekTime(1) + 1);
-                % skip to seekTime(1)
-                fseek(fID, skipLength, 'cof');
-                data = fread(fID, readElements, '*single');
-            else
-                data = fread(fID, '*single');
-            end
-
-            data = reshape(data, dataSize);            
+        data = reshape(data, dataSize);            
     end
 
     function data = subtractPlane(data, downscaleFactor)
+    % Fit and subtract a plane from each timestep slice of data array. 
+    % Downscales data array in spatial dimensions by downscaleFactor.
+    
         if ~exist('downscaleFactor', 'var')
             downscaleFactor = 0.2;
         end
@@ -3516,13 +3666,14 @@ methods(Static)
     end
 
     function img = subtractDC(img, period)
-            % Remove the low-frequency (DC) component from an image.
-            %   Applies a double box filter of width ~4 fringe periods and
-            %   subtracts the result. 
-            filterSize = 2*floor(2*period) + 1;
-            dc = imboxfilt(img, filterSize, 'padding', 'symmetric');
-            dc = imboxfilt(dc, filterSize, 'padding', 'symmetric');
-            img = double(img) - double(dc);
+    % Remove the low-frequency (DC) component from an image.
+    %   Applies a double box filter of width ~4 fringe periods and
+    %   subtracts the result.
+    % 
+        filterSize = 2*floor(2*period) + 1;
+        dc = imboxfilt(img, filterSize, 'padding', 'symmetric');
+        dc = imboxfilt(dc, filterSize, 'padding', 'symmetric');
+        img = double(img) - double(dc);
     end
 
     function [period, normAxis, tiltAngle, normVec] = analyzeFringe(img)
@@ -3604,17 +3755,19 @@ methods(Static)
     end
 
     function W4D = morletCWT(img, scales, anglesDeg, sigma, gamma, fringeNormAxis)
-        % Continuous Morlet wavelet transform of a 1-D or 2-D input.
-        %   W4D = MORLETCWT(IMG, SCALES, ANGLESDEG, SIGMA, EPSILON) returns the
-        %   complex CWT coefficients of IMG as an array of size
-        %   [size(IMG,1), size(IMG,2), numel(SCALES), nAngles], L1-normalized.
-        %
-        %   2-D input: Wavelet Toolbox CWTFT2 with the anisotropic Morlet
-        %   wavelet {Omega0 = 6, SIGMA, EPSILON}
-        %
-        %   1-D input (row or column vector): the analytic Morlet wavelet is
-        %   built directly in the Fourier domain (k0 = 6, width set by SIGMA);
-        %   ANGLESDEG and EPSILON are ignored and nAngles = 1.
+    % Continuous Morlet wavelet transform of a 1-D or 2-D input.
+    %   Returns the complex CWT coefficients of IMG as an array of size
+    %   [size(IMG,1), size(IMG,2), numel(SCALES), nAngles], L1-normalized.
+    %
+    %   2-D input: Wavelet Toolbox CWTFT2 with the anisotropic Morlet
+    %   wavelet {Omega0 = 6, sigma, gamma}
+    %
+    %   1-D input (row or column vector): the analytic Morlet wavelet is
+    %   built directly in the Fourier domain (k0 = 6, width set by sigma);
+    %   anglesdeg and gamma are ignored and nAngles = 1.
+    %   If fringeNormAxis ('X' or 'Y') is provided, pads the array in that
+    %   direction only and in both directions otherwise.
+
         if ~exist('fringeNormAxis', 'var')
             fringeNormAxis = '';
         end
@@ -3668,9 +3821,9 @@ methods(Static)
     end
 
     function elev = evalPolyElev(phase, coeffs)
-        % Evaluate the polynomial phase-to-height model.
-        % h = sum_i coeffs(:,:,i) .* phase.^(i-1)
-        % coeffs planes are broadcast over the time dimension of phase.
+    % Evaluate the polynomial phase-to-height model.
+    % h = sum_i coeffs(:,:,i) .* phase.^(i-1)
+    % coeffs planes are broadcast over the time dimension of phase.
         elev = zeros(size(phase));
         for i = 1:size(coeffs, 3)
             elev = elev + phase.^(i - 1) .* coeffs(:,:,i);
@@ -3678,12 +3831,12 @@ methods(Static)
     end
 
     function elev = evalTakedaElev(phaseDiff, L, d, f0)
-        % Evaluate the Takeda phase-to-height model.
+    % Evaluate the Takeda phase-to-height model.
         elev = L*phaseDiff ./ (2*pi*f0*d + phaseDiff);
     end
     
     function makeVideo(filename, framerate)
-        %MAKEVIDEO Read all images in directory and convert into animation.
+    % Read all images in directory and convert into animation.
         addr = uigetdir();
         if addr == 0
             return

@@ -52,9 +52,9 @@ The `readimx` library must also be added to the MATLAB path if required.
 
 ```matlab
 demoCase = FtpSolver("demoCase", ...              % case ID must be a valid MATLAB variable name
-    refAddr       = "path/to/reference.tif", ...  % flat reference fringe image
-    dataAddr      = "path/to/data.tif", ...       % fringe image sequence
-    camCalibAddr  = "path/to/cam/calib.mat", ...  % camera calibration path
+    refPath       = "path/to/reference.tif", ...  % flat reference fringe image
+    dataPath      = "path/to/data.tif", ...       % fringe image sequence
+    camCalibPath  = "path/to/cam/calib.mat", ...  % camera calibration path
     resizeFactor  = 1, ...                        % rescale factor, between 0 and 1
     cropRect      = [100 100 1000 600] ...       % computational domain (X, Y, Width, Height)
     );    
