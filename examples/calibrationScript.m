@@ -30,11 +30,15 @@ calibCase = FtpSolver("calibCase", ...
 calibCase.calibModeOn();
 calibCase.setDisplayFromMargin(0);
 calibCase.showROI();
-calibCase.setPhaseCorrMethod("spatial");
+
 % use the 15th fringe peak for phase correction
 % set tracked peak after setDisplayFromMargin, which resets it
-calibCase.setTrackedPeakInd(15);   
+calibCase.setPhaseCorrection(method="spatial", trackedPeak=15)
+calibCase.setDemodulation(method="wavelet", waveletWavelengths=[28 36], ...
+                                    waveletDivisions=10, waveletAngles=-90);
+
 calibCase.solve(); 
+
 calibCase.animate(1, nPlanes, 1, quantity='phase'); % animate the calculated phase
 
 %% calibrate and save

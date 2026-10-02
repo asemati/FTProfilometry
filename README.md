@@ -78,10 +78,10 @@ demoCase.writeCase("path/to/output");
 
 Two factors control resolution independently. `resizeFactor` (default `1`) rescales the raw images
 before they are demodulated and so governs the cost of the computation, while
-`resizeFactorDisplay` (default `0.5`) rescales the unwrapped phase before it is stored
+`resizeFactorOutput` (default `0.5`) rescales the unwrapped phase before it is stored
 and so governs the size of everything that comes out of a run: the surface and phase
 stacks and the coordinate meshes. A 1000×600 computational
-domain therefore produces 500×300 output arrays at the default setting. Set `resizeFactorDisplay = 1` to keep the full grid.
+domain therefore produces 500×300 output arrays at the default setting. Set `resizeFactorOutput = 1` to keep the full grid.
 
 ## Calibration
 
@@ -94,7 +94,7 @@ The phase-to-height conversion uses one of two models:
 
 The `poly` calibration is built from a stack of reference planes at
 known heights (`heightVec`) and **requires the solver to be run at full resolution**
-(`resizeFactor = 1`, `resizeFactorDisplay = 1`). Run `calibModeOn()` before `calibratePoly(...)` to set these parameters automatically. Calibration coefficients can be saved and reloaded with `writePolyCalibration` / `setElevModelPoly`.
+(`resizeFactor = 1`, `resizeFactorOutput = 1`). Run `calibModeOn()` before `calibratePoly(...)` to set these parameters automatically. Calibration coefficients can be saved and reloaded with `writePolyCalibration` / `setElevModelPoly`.
 
 ## Key methods
 
@@ -102,7 +102,7 @@ known heights (`heightVec`) and **requires the solver to be run at full resoluti
 |---------------------------------------|-----------------------------------------------------|
 | `setROI`                              | Interactively define the computational domain.        |
 | `calibrateTakeda` / `calibratePoly`   | Calibrate the phase-to-height model.                  |
-| `setRange`                            | Restrict processing to a sub-range of frames.         |
+| `setSolveRange`                       | Restrict processing to a sub-range of frames.         |
 | `drawPeaks`                           | Visualize the performance of the spatial phase correction technique.
 | `enableChunkedOutput`                 | Split the computation into chunks and write to temporary files on disk during the run. 
 | `solve`                               | Run the full processing pipeline.                     |
