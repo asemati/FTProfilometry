@@ -24,7 +24,7 @@ classdef FtpSolver < handle
 %     solve             - Run the full processing pipeline
 %     setROI            - Interactively define the computational domain
 %     calibratePoly     - Calibrate phase-to-height model
-%     probeElev         - Extract time series at a spatial location
+%     probe             - Extract time series at a spatial location
 %     animate           - Visualize the reconstructed surface
 %     writeCase         - Save results
 %
@@ -49,7 +49,7 @@ classdef FtpSolver < handle
 
 %------------- BEGIN CODE --------------
     
-properties (SetAccess = public)
+properties (SetAccess = private)
     caseID              % object name
     source              % data attributes
     imgData             % image buffers
@@ -1106,131 +1106,103 @@ methods (Access = public)
         yCrop = obj.worldCoords.mesh.y(rowInds, colInds);
     end
 
-    function tseries = probeElev(obj, location, shape, operation)
-    % Elevation time series at a location specified in world coordinates.
-    %   Finds the grid point nearest to the requested position; with a
-    %   size given, aggregates over a square or circular patch instead.
-    %   In:  location  - [x y] or [x y size] in world units (mm)
-    %        shape     - 'square' or 'circle' (only used with a size)
-    %        operation - 'min', 'mean' or 'max' over the patch
-    %   Out: tseries   - elevation versus frame
-
-        if ~isequal(size(location), [1 2]) && ~isequal(size(location), [1 3])
-            error("Probe target must be either a 1x2 or 1x3 vector.")
+    function tseries = probe(obj, location, opts)
+    % Time series of elevation or phase at a location in world coordinates.
+    %   probe([x y]) returns the elevation at the grid point nearest to
+    %   (x, y). With patchSize=d it combines the grid points in a square
+    %   of side d, or a circle of diameter d, centered on (x, y).
+    %
+    %   Examples:
+    %     probe([120 45])
+    %     probe([120 45], patchSize=5, shape="circle", operation="max")
+    %     probe([120 45], quantity="phase")
+    %
+    %   Inputs:
+    %        location - [x y], world units (mm)
+    %        Name-value options:
+    %           quantity  - "elev" (default) or "phase"
+    %           patchSize - side length or diameter of the patch (mm);
+    %                      0 (default) for the nearest grid point
+    %           shape     - "square" (default) or "circle"
+    %           operation - "mean" (default), "min" or "max" over the
+    %                      patch, ignoring NaN
+    %   Outputs: 
+    %           tseries  - (N x 1) vector, one value per stored frame
+        arguments
+            obj
+            location       (1,2) double {mustBeFinite}
+            opts.quantity  (1,1) string {mustBeMember(opts.quantity, ["elev", "phase"])} = "elev"
+            opts.patchSize (1,1) double {mustBeNonnegative, mustBeFinite} = 0
+            opts.shape     (1,1) string {mustBeMember(opts.shape, ["square", "circle"])} = "square"
+            opts.operation (1,1) string {mustBeMember(opts.operation, ["mean", "min", "max"])} = "mean"
         end
 
-        if isempty(obj.elevData.stack)
-            error("No surface elevation data.")
+        switch opts.quantity
+            case "elev"
+                stack = obj.elevData.stack;
+            case "phase"
+                stack = obj.phaseData.stack;
+        end
+        if isempty(stack)
+            error("No stored %s data. Call setStoredOutputs(%s=true) and run solve().", ...
+                opts.quantity, opts.quantity)
         end
 
-        pitch = hypot(obj.worldCoords.mesh.x(1,2) - obj.worldCoords.mesh.x(1,1), ...
-            obj.worldCoords.mesh.y(1,2) - obj.worldCoords.mesh.y(1,1));
+        meshX = obj.worldCoords.mesh.x;
+        meshY = obj.worldCoords.mesh.y;
+        if ~isequal(size(stack, [1 2]), size(meshX))
+            error("The %s stack does not match the world-coordinate mesh.", opts.quantity)
+        end
 
-        [~, ind] = min((obj.worldCoords.mesh.x - location(1)).^2 + ...
-            (obj.worldCoords.mesh.y - location(2)).^2, [], 'all');
-        [y_ind, x_ind] = ind2sub(size(obj.worldCoords.mesh.x), ind);
+        dx = meshX - location(1);
+        dy = meshY - location(2);
+        % spacing between neighboring grid points
+        spacing = hypot(meshX(1,2) - meshX(1,1), meshY(1,2) - meshY(1,1));
+        nFrames = size(stack, 3);
 
-        n = size(location, 2);
-        if n == 2
-            tseries = squeeze(obj.elevData.stack(y_ind, x_ind, :));
+        % single point: nearest grid node
+        if opts.patchSize == 0
+            [dist, ind] = min(hypot(dx, dy), [], 'all');
+            if dist > spacing
+                error("Location (%g, %g) is outside the measurement area.", ...
+                    location(1), location(2))
+            end
+            [row, col] = ind2sub(size(meshX), ind);
+            tseries = reshape(stack(row, col, :), nFrames, 1);
             return
         end
 
-        r = location(3)/2;
-        r_pixel = max(1, round(r / pitch));
-
-        switch shape
-            case 'square'
-                % square centered at x = location(1), y = location(2) with side length of location(3)
-                probeData = obj.elevData.stack(y_ind - r_pixel:y_ind + r_pixel, x_ind - r_pixel:x_ind + r_pixel, :);
-            case 'circle'
-                angles = linspace(0, 2*pi, 10000);
-                x = cos(angles) * r_pixel + x_ind;
-                y = sin(angles) * r_pixel + y_ind;
-                mask = poly2mask(x, y, size(obj.worldCoords.mesh.x, 1), size(obj.worldCoords.mesh.x, 2));
-                mask = double(mask);
-                mask(mask == 0) = nan;
-                probeData = obj.elevData.stack .* mask;
-            otherwise
-                error("Invalid probe shape. Valid shapes are 'square' and 'circle'.")
+        % patch: grid points inside the square or circle around (x, y)
+        halfSize = opts.patchSize / 2;
+        switch opts.shape
+            case "square"
+                inPatch = max(abs(dx), abs(dy)) <= halfSize;
+            case "circle"
+                inPatch = hypot(dx, dy) <= halfSize;
+        end
+        if ~any(inPatch, 'all')
+            error("The patch contains no grid points: it is outside the " + ...
+                "measurement area or smaller than the grid spacing (%g).", spacing)
+        end
+        if any(inPatch([1 end], :), 'all') || any(inPatch(:, [1 end]), 'all')
+            warning("The patch reaches the edge of the measurement area " + ...
+                "and may be truncated.")
         end
 
-        switch operation
-                case 'min'
-                    processedData = min(probeData, [], [1 2]);
-                case 'mean'
-                    processedData = mean(probeData, [1 2], "omitnan");
-                case 'max'
-                    processedData = max(probeData, [], [1 2]);
-                otherwise
-                    error("Invalid operation. Valid operations are 'min', 'mean' and 'max'")
-        end
-
-        tseries = squeeze(processedData);
-    end
-
-    function tseries = probePhase(obj, location, shape, operation)
-    % Phase time series at a location specified in world coordinates.
-    %   Same addressing as probeElev, applied to phaseData.stack, so the
-    %   case must have been solved with phaseOutput on.
-    %   In:  location  - [x y] or [x y size] in world units (mm)
-    %        shape     - 'square' or 'circle' (only used with a size)
-    %        operation - 'min', 'mean' or 'max' over the patch
-    %   Out: tseries   - phase versus frame
-
-        if ~isequal(size(location), [1 2]) && ~isequal(size(location), [1 3])
-            error("Probe target must be either a 1x2 or 1x3 vector.")
-        end
-
-        if ~obj.outputConfig.phaseOutput
-            error("No phase data. Call setStoredOutputs(phase=true) before running solve().")
-        end
-
-        pitch = hypot(obj.worldCoords.mesh.x(1,2) - obj.worldCoords.mesh.x(1,1), ...
-            obj.worldCoords.mesh.y(1,2) - obj.worldCoords.mesh.y(1,1));
-
-        [~, ind] = min((obj.worldCoords.mesh.x - location(1)).^2 + ...
-            (obj.worldCoords.mesh.y - location(2)).^2, [], 'all');
-        [y_ind, x_ind] = ind2sub(size(obj.worldCoords.mesh.x), ind);
+        % one row per grid point, one column per frame
+        % inPatch(:) lists the grid points in the same order, so it selects the patch rows
+        vals = reshape(stack, [], nFrames);
+        vals = vals(inPatch(:), :);
         
-        n = length(location);
-        if n == 2
-            tseries = squeeze(obj.phaseData.stack(y_ind, x_ind, :));
-            return
+        switch opts.operation
+            case "mean"
+                tseries = mean(vals, 1, "omitnan");
+            case "min"
+                tseries = min(vals, [], 1, "omitnan");
+            case "max"
+                tseries = max(vals, [], 1, "omitnan");
         end
-
-        % assumes x and y scaling are equal
-        r = location(3)/2;
-        r_pixel = max(1, round(r / pitch));
-
-        switch shape
-            case 'square'
-                % square centered at x = location(1), y = location(2) with side length of location(3)
-                probeData = obj.phaseData.stack(y_ind - r_pixel:y_ind + r_pixel, x_ind - r_pixel:x_ind + r_pixel, :);
-            case 'circle'
-                angles = linspace(0, 2*pi, 10000);
-                x = cos(angles) * r_pixel + x_ind;
-                y = sin(angles) * r_pixel + y_ind;
-                mask = poly2mask(x, y, size(obj.worldCoords.mesh.x, 1), size(obj.worldCoords.mesh.x, 2));
-                mask = double(mask);
-                mask(mask == 0) = nan;
-                probeData = obj.phaseData.stack .* mask;
-            otherwise
-                error("Invalid probe shape. Valid shapes are 'square' and 'circle'.")
-        end
-
-        switch operation
-                case 'min'
-                    processedData = min(probeData, [], [1 2]);
-                case 'mean'
-                    processedData = mean(probeData, [1 2], "omitnan");
-                case 'max'
-                    processedData = max(probeData, [], [1 2]);
-                otherwise
-                    error("Invalid operation. Valid operations are 'min', 'mean' and 'max'")
-        end
-
-        tseries = squeeze(processedData);
+        tseries = tseries(:);
     end
 
     function animate(obj, firstTimestep, lastTimestep, framerate, opts)
@@ -1255,8 +1227,6 @@ methods (Access = public)
                     {mustBeMember(opts.quantity, ["elev", "phase"])}= "elev";
             opts.camFPS (1,1) double = 1;
             opts.data cell = {};
-            opts.saveAddr string = [];
-            opts.fast (1,1) logical = false;
             opts.dispTime (1,1) logical = true;
             opts.subtractPlane (1,1) logical = false;
             opts.subtractMean (1,1) logical = false;
@@ -1265,7 +1235,6 @@ methods (Access = public)
             opts.smoothingSigma (1,1) double = 2;
             opts.annotTStart (1,1) double = 0;
             opts.nanInterp (1,1) logical = false;
-            opts.cleanup (1,1) logical = false;
             opts.ZLim (1,2) double = [0 0];
             opts.lightPosition (1,3) double = [1 1 5];
             opts.FontSize (1,1) double = 16;
@@ -1583,8 +1552,8 @@ methods (Access = public)
         end
 
         if isequal(opts.ZLim, [0 0])
-            zMin = prctile(dataArray(:,:,1:4:end), 0.01, 'all');
-            zMax = prctile(dataArray(:,:,1:4:end), 99.99, 'all');
+            zMin = prctile(dataArray(1:4:end,1:4:end,:), 0.01, 'all');
+            zMax = prctile(dataArray(1:4:end,1:4:end,:), 99.99, 'all');
         else
             zMin = opts.ZLim(1);
             zMax = opts.ZLim(2);
