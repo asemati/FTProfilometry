@@ -141,8 +141,10 @@ methods (Access = public)
         obj.fringe.normAxis = opts.normAxis;
         if strcmpi(opts.normAxis, 'X')
             obj.fringe.normVec = [1, eps];
+            obj.pCorrOpts.startEdge = "left";
         elseif strcmpi(opts.normAxis, 'Y')
             obj.fringe.normVec = [eps, 1];
+            obj.pCorrOpts.startEdge = "top";
         end
 
         if ~isempty(obj.prcOpts.burntPixelMask)
@@ -161,7 +163,9 @@ methods (Access = public)
             obj.fringe.normVec = normVec;
             obj.fringe.tiltAngle = tiltAngle;
             if strcmpi(normAxis, 'Y')
-                obj.pCorrOpts.startEdge = 'top';
+                obj.pCorrOpts.startEdge = "top";
+            else
+                obj.pCorrOpts.startEdge = "left";
             end
             obj.updateGeometry();
         end
@@ -498,17 +502,39 @@ methods (Access = public)
         end
     end
 
-    function setUnwrapMargin(obj, val)
-    % Set the margin in RAW-frame pixels that is ignored by the unwrapping algorithm.
-        obj.prcOpts.unwrapMarginOrg = val;
+    function setUnwrapMargin(obj, marginAcrossFringes, marginAlongFringes)
+    % Set the margins, in RAW-frame pixels, that are ignored by the unwrapping algorithm.
+    %   setUnwrapMargin(marginAcrossFringes, marginAlongFringes)
+    %       marginAcrossFringes  - margin along the fringe normal axis
+    %                              (fringe.normAxis)
+    %       marginAlongFringes   - margin along the other image axis
+    %   setUnwrapMargin() restores the default, which follows the fringe
+    %   period: one period along the normal axis and 0.2 periods along the
+    %   other axis.
+        arguments
+            obj
+            marginAcrossFringes       {mustBeNumeric, mustBeScalarOrEmpty, mustBeNonnegative, mustBeInteger} = []
+            marginAlongFringes {mustBeNumeric, mustBeScalarOrEmpty, mustBeNonnegative, mustBeInteger} = []
+        end
+        if nargin == 1
+            obj.prcOpts.unwrapMarginSetting = [];
+        elseif nargin == 3 && ~isempty(marginAcrossFringes) && ~isempty(marginAlongFringes)
+            obj.prcOpts.unwrapMarginSetting = double([marginAcrossFringes, marginAlongFringes]);
+        else
+            error("Give both margins, or none to restore the default.")
+        end
         obj.updateGeometry();
     end
 
     function setUnwrapMethod(obj, method)
     % Set the unwrapping algorithm.
+    %   "1D"   - unwrap row-wise, then column-wise (default)
+    %   "2D"   - as "1D", refined with unwrap2D when residual gradient
+    %            outliers remain
+    %   "none" - leave the phase wrapped
         arguments 
             obj
-            method (1,1) string {mustBeMember(method, ["1D", "2D"])}
+            method (1,1) string {mustBeMember(method, ["1D", "2D", "none"])}
         end
         obj.prcOpts.unwrapMethod = method;
     end
@@ -532,13 +558,12 @@ methods (Access = public)
     function setROI(obj)
     % Define the computational domain interactively.
     % Shows the raw reference image and waits for a rectangle to be
-    % drawn. The result becomes cropRectOrg, the display rectangle is
-    % set one unwrap margin inside it, and the geometry is refreshed.
+    % drawn. The result becomes cropRectOrg, the output rectangle is
+    % reset to one unwrap margin inside it, and the geometry is refreshed.
 
         if isempty(obj.imgData.refScaled)
             error("Missing reference image.")
         end
-        mg = obj.prcOpts.unwrapMarginOrg;
 
         figure()
         tempHndl = imshow(obj.imgData.refRaw, []);
@@ -549,9 +574,7 @@ methods (Access = public)
             if isvalid(rect)
                 if ~isempty(rect.Position)
                     obj.prcOpts.cropRectOrg = round(rect.Position);
-                    obj.prcOpts.cropRectDisplayOrg = [mg + 1, mg + 1, ... 
-                                            obj.prcOpts.cropRectOrg(3) - 2*mg, ...
-                                            obj.prcOpts.cropRectOrg(4) - 2*mg];
+                    obj.prcOpts.cropRectOutputOrg = [];   % refilled by updateGeometry
                     break
                 end
             else
@@ -567,134 +590,259 @@ methods (Access = public)
         obj.updateGeometry();
     end
     
-    function setCropRect(obj, cropRect)
-    % Specify the computational domain at full image resolution in [x y width height] format.
-        obj.prcOpts.cropRectOrg = cropRect;
+    function setGeometry(obj, opts)
+    % Set the computational domain and the resize factors.
+    %   setGeometry(cropRect=[100 150 1500 1200], resizeFactor=0.7, ...
+    %                                             resizeFactorOutput=0.5)
+    %   Options not named keep their current setting.
+    %   cropRect            - computational domain in the RAW frame,
+    %                         [x y width height]; [] uses the full image.
+    %                         Restores automatic selection of the tracked
+    %                         fringe peak.
+    %   resizeFactor        - factor (between 0 and 1) applied to the images
+    %                         before processing to reduce computational cost
+    %   resizeFactorOutput  - factor (between 0 and 1) applied after the
+    %                         phase is calculated to reduce storage size
+        arguments
+            obj
+            opts.cropRect            {mustBeNumeric}
+            opts.resizeFactor        (1,1) double {mustBePositive}
+            opts.resizeFactorOutput (1,1) double {mustBePositive}
+        end
+        if isfield(opts, 'cropRect')
+            if ~isempty(opts.cropRect) && numel(opts.cropRect) ~= 4
+                error("cropRect must be [x y width height], or [] for the full image.")
+            end
+            obj.prcOpts.cropRectOrg = reshape(double(opts.cropRect), 1, []);
+            obj.pCorrOpts.peakInd = [];
+        end
+        if isfield(opts, 'resizeFactor')
+            obj.prcOpts.resizeFactor = opts.resizeFactor;
+        end
+        if isfield(opts, 'resizeFactorOutput')
+            obj.prcOpts.resizeFactorOutput = opts.resizeFactorOutput;
+        end
+        obj.updateGeometry();
+    end
+
+    function setDemodulation(obj, opts)
+    % Set the demodulation method and its parameters.
+    %   setDemodulation(method="fourier", filterWidthFrac=0.6)
+    %   setDemodulation(method="wavelet", waveletWavelengths=[10 16], ...
+    %                   waveletDivisions=20, waveletAngles=0)
+    %   Options not named keep their current setting.
+    %   method             - "fourier" (default) or "wavelet"
+    %   Fourier method:
+    %   filterWidthFrac    - width of the bandpass filter as a fraction of
+    %                        the carrier frequency, between 0 and 1
+    %                        (default 0.6)
+    %   Wavelet method:
+    %   waveletWavelengths - [min max] fringe wavelength, in RAW-frame
+    %                        pixels, spanned by the wavelet scales
+    %   waveletDivisions   - number of scales between min and max
+    %   waveletAngles      - wavelet orientations in degrees, mapped to
+    %                        (-135, 45] for consistency with the Fourier
+    %                        method (default 0)
+    %   waveletSigma       - width of the Morlet wavelet (default 0.6)
+    %   waveletGamma       - anisotropy of the Morlet wavelet (default 1)
+        arguments
+            obj
+            opts.method             (1,1) string {mustBeMember(opts.method, ["fourier", "wavelet"])}
+            opts.filterWidthFrac    (1,1) double {mustBePositive, mustBeLessThanOrEqual(opts.filterWidthFrac, 1)}
+            opts.waveletWavelengths (1,2) double {mustBePositive}
+            opts.waveletDivisions   (1,1) double {mustBeInteger, mustBePositive}
+            opts.waveletAngles      double {mustBeVector}
+            opts.waveletSigma       (1,1) double {mustBePositive}
+            opts.waveletGamma       (1,1) double {mustBePositive}
+        end
+        if isfield(opts, 'method')
+            obj.demodOpts.method = opts.method;
+        end
+        if isfield(opts, 'filterWidthFrac')
+            obj.demodOpts.filtWidthFrac = opts.filterWidthFrac;
+        end
+        if isfield(opts, 'waveletWavelengths')
+            if opts.waveletWavelengths(1) > opts.waveletWavelengths(2)
+                error("waveletWavelengths must be [min max].")
+            end
+            obj.demodOpts.waveletWavelengths = opts.waveletWavelengths;
+        end
+        if isfield(opts, 'waveletDivisions')
+            obj.demodOpts.waveletDivisions = opts.waveletDivisions;
+        end
+        if isfield(opts, 'waveletAngles')
+            obj.demodOpts.angleList = mod(opts.waveletAngles - 45, -180) + 45;
+        end
+        if isfield(opts, 'waveletSigma')
+            obj.demodOpts.sigma = opts.waveletSigma;
+        end
+        if isfield(opts, 'waveletGamma')
+            obj.demodOpts.gamma = opts.waveletGamma;
+        end
+
+        % the wavelet scales are derived from these in updateGeometry
+        if isfield(opts, 'waveletWavelengths') || isfield(opts, 'waveletDivisions')
+            obj.updateGeometry();
+        end
+    end
+
+    function setPhaseCorrection(obj, opts)
+    % Set how the 2*n*pi offset of each frame is fixed.
+    %   setPhaseCorrection(method="spatial", trackedPeak=3)
+    %   Options not named keep their current setting.
+    %   method - "temporal" (default): match each frame's phase to the
+    %               previous frame. Fails if the acquisition frequency is
+    %               too low. A failure at a single timestep propagates to
+    %               the end.
+    %            "spatial": track a fringe peak on the correction lines and
+    %               compare it to the same peak in the reference image. 
+    %               Requires the tracked peak to remain visible throughout
+    %               the recording.
+    %            "none": leave the unwrapped phase as is.
+    %   Spatial method:
+    %   trackedPeak        - index of the tracked fringe peak, counted from
+    %                        startEdge; [] selects it automatically
+    %   edgeSafetyFactor   - the automatic selection picks the first peak
+    %                        at least this many fringe periods from 
+    %                        startEdge (default 2.5)
+    %   startEdge          - edge the peaks are counted from: "left" or
+    %                        "right" when fringe.normAxis is "X", "top" or
+    %                        "bottom" when it is "Y"
+    %   peakMinFrac        - minimum peak height, as a fraction of the
+    %                        median intensity on the line (default 1/3)
+    %   peakProminenceFrac - minimum peak prominence, as a fraction of the
+    %                        5-95 percentile intensity range on the line
+    %                        (default 1/4)
+    %   Naming startEdge, edgeSafetyFactor, peakMinFrac or
+    %   peakProminenceFrac restores automatic peak selection, unless
+    %   trackedPeak is named in the same call.
+        arguments
+            obj
+            opts.method             (1,1) string {mustBeMember(opts.method, ["spatial", "temporal", "none"])}
+            opts.trackedPeak        {mustBeNumeric, mustBeScalarOrEmpty, mustBeInteger, mustBePositive}
+            opts.edgeSafetyFactor   (1,1) double {mustBePositive}
+            opts.startEdge          (1,1) string {mustBeMember(opts.startEdge, ["left", "right", "top", "bottom"])}
+            opts.peakMinFrac        (1,1) double {mustBeNonnegative}
+            opts.peakProminenceFrac (1,1) double {mustBeNonnegative}
+        end
+        if isfield(opts, 'method')
+            obj.pCorrOpts.method = opts.method;
+        end
+        if isfield(opts, 'startEdge')
+            if strcmpi(obj.fringe.normAxis, 'Y')
+                validEdges = ["top", "bottom"];
+            else
+                validEdges = ["left", "right"];
+            end
+            if ~any(strcmpi(opts.startEdge, validEdges))
+                error("startEdge must be ""%s"" or ""%s"" when fringe.normAxis is ""%s"".", ...
+                    validEdges(1), validEdges(2), obj.fringe.normAxis)
+            end
+            obj.pCorrOpts.startEdge = opts.startEdge;
+        end
+        if isfield(opts, 'edgeSafetyFactor')
+            obj.pCorrOpts.edgeSafetyFactor = opts.edgeSafetyFactor;
+        end
+        if isfield(opts, 'peakMinFrac')
+            obj.pCorrOpts.peakMinFrac = opts.peakMinFrac;
+        end
+        if isfield(opts, 'peakProminenceFrac')
+            obj.pCorrOpts.peakPromFrac = opts.peakProminenceFrac;
+        end
+
+        if isfield(opts, 'trackedPeak')
+            obj.pCorrOpts.peakInd = double(opts.trackedPeak);
+        elseif any(isfield(opts, {'startEdge', 'edgeSafetyFactor', ...
+                                  'peakMinFrac', 'peakProminenceFrac'}))
+            obj.pCorrOpts.peakInd = [];
+        end
+        obj.refreshAutoPeak();
+    end
+
+    function setOutputRectFromMargin(obj, offset)
+    % Set the output crop rectangle as an offset from the unwrap margin.
+        obj.prcOpts.cropRectOutputOrg = obj.marginOutputRect(offset);
         obj.pCorrOpts.peakInd = [];
-        obj.updateGeometry(); 
-    end
-
-    function setDemodMethod(obj, method)
-    % Set the demodulation algorithm.
-        arguments 
-            obj
-            method (1,1) string {mustBeMember(method, ["fourier", "wavelet"])}
-        end
-        obj.demodOpts.method = method;
-    end
-
-    function setFourierFiltWidthFrac(obj, frac)
-    % Set the width of the bandpass filter as a fraction of the carrier frequency (between 0 and 1).
-        arguments 
-            obj
-            frac (1,1) double
-        end
-        obj.demodOpts.filtWidthFrac = frac;
-    end
-    
-    function setPhaseCorrMethod(obj, method)
-    % Choose how the 2*n*pi offset of each frame is fixed.
-    %   setPhaseCorrMethod("temporal") - (default) Match each frame's 
-    %       phase to the previous frame. Fails if the acquisition 
-    %       frequency is too low. Failure at a single timestep will
-    %       propagate to the end. 
-    %   setPhaseCorrMethod("spatial")  - Track a fringe peak on the
-    %       correction lines and align it with the reference. Requires
-    %       the first fringe peak to remain visible throughout the
-    %       recording.
-    %   setPhaseCorrMethod("none")     - Leave the unwrapped phase as is.
-
-        arguments 
-            obj
-            method (1,1) string {mustBeMember(method, ["spatial", "temporal", "none"])}
-        end
-        obj.pCorrOpts.method = method;
-    end
-
-    function setTrackedPeakInd(obj, peakInd)
-    % Set the fringe peak that is tracked by the spatial phase correction algorithm.
-        arguments
-            obj
-            peakInd {mustBeNumeric, mustBeScalarOrEmpty, mustBeInteger, mustBePositive}
-        end
-        obj.pCorrOpts.peakInd = double(peakInd);
-    end
-
-    function setTrackedPeakSafetyFactor(obj, factor)
-    % Set the margin that is used to automatically determine the tracked fringe peak.
-    % If no fringe peak is set by the user, the spatial phase correction
-    % algorithm finds the closest peak within factor*fringePeriod pixels to
-    % the edge and tracks that. 
-        arguments
-            obj
-            factor (1,1) double {mustBePositive}
-        end
-        obj.pCorrOpts.edgeSafetyFactor = factor;
-    end
-
-    function setDisplayFromMargin(obj, offset)
-    % Set the display crop rectangle as an offset from the unwrap margin.
-        mrg = obj.prcOpts.unwrapMarginOrg;
-        obj.prcOpts.cropRectDisplayOrg = [mrg + 1 + offset, mrg + 1 + offset, ... 
-                                obj.prcOpts.cropRectOrg(3) - 2*mrg - 2*offset, ...
-                                obj.prcOpts.cropRectOrg(4) - 2*mrg - 2*offset];
-        obj.pCorrOpts.peakInd = [];
         obj.updateGeometry();
     end
 
-    function setResizeFactor(obj, factor)
-    % Set the image resize factor (between 0 and 1) to reduce the computational cost of processing.
+    function setPreprocessing(obj, opts)
+    % Set the image preprocessing options.
+    %   setPreprocessing(dcSubtraction=true, discardThreshold=2000)
+    %   Options not named keep their current setting.
+    %   dcSubtraction          - remove the background (DC) intensity from
+    %                            each image before demodulation
+    %                            (default true)
+    %   refImgSmoothing        - smooth the reference image along the
+    %                            fringes (default false)
+    %   discardThreshold       - frames whose mean intensity inside the
+    %                            computational domain exceeds this value
+    %                            are stored as NaN; [] disables (default)
+    %   burntPixelMask         - logical mask of burnt pixels, the size of
+    %                            the raw, unrectified image; [] for none
+    %   burntPixelInterpMethod - how burnt pixels are filled: "fastLinear"
+    %                            (4-neighbor average, default) or "smooth"
+    %                            (regionfill)
         arguments
             obj
-            factor (1,1) double {mustBePositive}
+            opts.dcSubtraction          (1,1) logical
+            opts.refImgSmoothing        (1,1) logical
+            opts.discardThreshold       {mustBeNumeric, mustBeScalarOrEmpty}
+            opts.burntPixelMask         {mustBeNumericOrLogical}
+            opts.burntPixelInterpMethod (1,1) string {mustBeMember(opts.burntPixelInterpMethod, ["fastLinear", "smooth"])}
         end
-        obj.prcOpts.resizeFactor = factor;
-        obj.updateGeometry();
+        if isfield(opts, 'dcSubtraction')
+            obj.prcOpts.dcSubtraction = opts.dcSubtraction;
+        end
+        if isfield(opts, 'refImgSmoothing')
+            obj.prcOpts.refImgSmoothing = opts.refImgSmoothing;
+        end
+        if isfield(opts, 'discardThreshold')
+            obj.prcOpts.discardThreshold = double(opts.discardThreshold);
+        end
+        if isfield(opts, 'burntPixelMask')
+            obj.prcOpts.burntPixelMask = logical(opts.burntPixelMask);
+            [obj.prcOpts.burntPixelRows, ...
+             obj.prcOpts.burntPixelCols] = find(obj.prcOpts.burntPixelMask);
+        end
+        if isfield(opts, 'burntPixelInterpMethod')
+            obj.prcOpts.interpBurntPixelMethod = opts.burntPixelInterpMethod;
+        end
     end
 
-    function setResizeFactorDisplay(obj, factor)
-    % Set the data resize factor (between 0 and 1) that is applied after the phase is calculated. Reduces storage size. 
+    function setParallaxCorrection(obj, state)
+    % Switch the parallax error correction on or off (default off).
+
         arguments
             obj
-            factor (1,1) double {mustBePositive}
+            state (1,1) logical
         end
-        obj.prcOpts.resizeFactorDisplay = factor;
-        obj.updateGeometry();
+        obj.prcOpts.parallaxCorrection = state;
+        if state && ~isfield(obj.cameraCalib, 'intrinsicsMatlab')
+            warning("FtpSolver:parallaxCorrectionWithoutPinhole", ...
+                "No pinhole camera calibration is loaded. Parallax error " + ...
+                "correction is skipped until one is read.")
+        end
     end
 
-    function setWaveletScales(obj, minWavelength, maxWavelength, divisions)
-    % set wavelet scales based on pattern wavelength in pixels
-    % wavelength should be for the raw, unscaled image
-        scaleMin = minWavelength*6/(2*pi) * obj.prcOpts.resizeFactor;
-        scaleMax = maxWavelength*6/(2*pi) * obj.prcOpts.resizeFactor;
-        obj.demodOpts.scaleList = linspace(scaleMin, scaleMax, divisions);
-    end
-
-    function setWaveletAngles(obj, angleList)
-    % Restrict angles to the range (-135, 45] for consistency with FT method.
-        obj.demodOpts.angleList = mod(angleList - 45, -180) + 45;
-    end
-    
-    function setBurntPixelMask(obj, mask)
-        % Store a logical mask which indicates burnt pixels. 
-        % Mask has to be the same size as the raw, unrectified image.
-        obj.prcOpts.burntPixelMask = mask;
-        [obj.prcOpts.burntPixelRows, ...
-            obj.prcOpts.burntPixelCols] = find(mask);
+    function setProgressReport(obj, state)
+    % Switch the per-frame progress report of solve() on or off (default on).
+        arguments
+            obj
+            state (1,1) logical
+        end
+        obj.outputConfig.reportProgressEnabled = state;
     end
     
     function calibModeOn(obj)
     % Set properties in preparation for calibration.  
-        obj.setResizeFactor(1);
-        obj.setResizeFactorDisplay(1);
-        obj.outputConfig.phaseOutput = true;
-        obj.outputConfig.elevOutput = false;
+        obj.setGeometry(resizeFactor=1, resizeFactorOutput=1);
+        obj.setStoredOutputs(phase=true, elev=false);
     end
 
     function calibModeOff(obj)
     % Switch off storage of phase and switch on storage of elevation. 
-        obj.outputConfig.phaseOutput = false;
-        obj.outputConfig.elevOutput = true;
+        obj.setStoredOutputs(phase=false, elev=true);
     end
 
     function readCameraCalibration(obj, calibPath, camNumber)
@@ -811,7 +959,7 @@ methods (Access = public)
     %   [optInd, isSafeLine, peaksLineCell] = findOptimalPeakInd(obj, peakInd)
     %
     %   Detects the reference peak train on every phase-correction line and
-    %   determines which peaks lie inside the output (display) frame while
+    %   determines which peaks lie inside the output frame while
     %   keeping a safety distance of pCorrOpts.edgeSafetyFactor pattern
     %   periods from the starting edge, so that motion of the surface
     %   cannot move the peak out of view. The first and last detected
@@ -848,19 +996,19 @@ methods (Access = public)
                 || isnan(obj.fringe.periodOrg) ...
                 || strlength(string(obj.fringe.normAxis)) == 0 ...
                 || isempty(obj.prcOpts.cropRectOrg) ...
-                || isempty(obj.prcOpts.cropRectDisplayOrg)
+                || isempty(obj.prcOpts.cropRectOutputOrg)
             return
         end
 
         % safe window along the pattern normal axis, RAW frame
         cropRectOrg = obj.prcOpts.cropRectOrg;
-        dispRectOrg = obj.prcOpts.cropRectDisplayOrg;
+        outputRectOrg = obj.prcOpts.cropRectOutputOrg;
         if strcmpi(obj.fringe.normAxis, 'X')
-            winStart = cropRectOrg(1) + dispRectOrg(1) - 1;
-            winEnd   = winStart + dispRectOrg(3);
+            winStart = cropRectOrg(1) + outputRectOrg(1) - 1;
+            winEnd   = winStart + outputRectOrg(3);
         else
-            winStart = cropRectOrg(2) + dispRectOrg(2) - 1;
-            winEnd   = winStart + dispRectOrg(4);
+            winStart = cropRectOrg(2) + outputRectOrg(2) - 1;
+            winEnd   = winStart + outputRectOrg(4);
         end
 
         safetyDist = obj.pCorrOpts.edgeSafetyFactor * obj.fringe.periodOrg;
@@ -911,9 +1059,18 @@ methods (Access = public)
     function updateGeometry(obj)
     % Recompute all resizeFactor-derived quantities
         rf = obj.prcOpts.resizeFactor;
-        rf_o = obj.prcOpts.resizeFactorDisplay;
+        rf_o = obj.prcOpts.resizeFactorOutput;
 
         obj.fringe.period = obj.fringe.periodOrg * rf;
+
+        % Morlet wavelet scales (Omega0 = 6) in the COMP frame, from the
+        % wavelength range given in the RAW frame
+        if ~isempty(obj.demodOpts.waveletWavelengths) ...
+                && ~isempty(obj.demodOpts.waveletDivisions)
+            scaleRange = obj.demodOpts.waveletWavelengths * 6/(2*pi) * rf;
+            obj.demodOpts.scaleList = linspace(scaleRange(1), scaleRange(2), ...
+                                                obj.demodOpts.waveletDivisions);
+        end
 
         if ~isempty(obj.worldCoords.scaling)
             obj.worldCoords.scaling.X.Slope = obj.worldCoords.scaling.X.SlopeOrg / rf;
@@ -921,7 +1078,22 @@ methods (Access = public)
             obj.worldCoords.scaling.mmPerPixel = obj.worldCoords.scaling.mmPerPixelOrg / rf;
         end
 
-        obj.prcOpts.unwrapMargin = round(obj.prcOpts.unwrapMarginOrg * rf * rf_o);
+        % Resolve the unwrap margin as [mX mY]. The setting is stored as
+        % [acrossFringe alongFringe]. With no setting the margin follows
+        % the fringe period
+        p = obj.fringe.periodOrg;
+        if ~isempty(obj.prcOpts.unwrapMarginSetting)
+            mrg = obj.prcOpts.unwrapMarginSetting;
+        elseif ~isempty(p) && ~isnan(p)
+            mrg = ceil([1, 0.2] * p);
+        else
+            mrg = [];
+        end
+        if ~isempty(mrg) && strcmpi(obj.fringe.normAxis, 'Y')
+            mrg = flip(mrg);
+        end
+        obj.prcOpts.unwrapMarginOrg = mrg;                  % RAW
+        obj.prcOpts.unwrapMargin    = round(mrg * rf);      % COMP
 
         if isempty(obj.prcOpts.cropRectOrg)
             [Ny, Nx] = size(obj.imgData.refRaw);
@@ -960,16 +1132,24 @@ methods (Access = public)
         obj.imgData.ref = imcrop(obj.imgData.refScaled, obj.prcOpts.cropRect);
         stackSize = ceil(rf_o*size(obj.imgData.ref));
         
-        if isempty(obj.prcOpts.cropRectDisplayOrg)
-            obj.prcOpts.cropRectDisplayOrg = [1 1 cropRectOrg(3) cropRectOrg(4)];
+        % An empty output rectangle is filled one unwrap margin inside the
+        % computational domain; a non-empty one is left as it is. While the
+        % margin is unknown (fringe period not yet auto-detected) it stays
+        % empty and the full domain stands in for the derived rectangle.
+        if isempty(obj.prcOpts.cropRectOutputOrg) && ~isempty(obj.prcOpts.unwrapMarginOrg)
+            obj.prcOpts.cropRectOutputOrg = obj.marginOutputRect(0);
         end
-        cropRectDisplay(1:2) = ceil(obj.prcOpts.cropRectDisplayOrg(1:2) * rf * rf_o);
-        cropRectDisplay(3:4) = floor(obj.prcOpts.cropRectDisplayOrg(3:4) * rf * rf_o);
+        outputRectOrg = obj.prcOpts.cropRectOutputOrg;
+        if isempty(outputRectOrg)
+            outputRectOrg = [1 1 cropRectOrg(3) cropRectOrg(4)];
+        end
+        cropRectOutput(1:2) = ceil(outputRectOrg(1:2) * rf * rf_o);
+        cropRectOutput(3:4) = floor(outputRectOrg(3:4) * rf * rf_o);
 
-        cropRectDisplay(1:2) = max(1, cropRectDisplay(1:2));
-        cropRectDisplay(3) = min(stackSize(2) - cropRectDisplay(1), cropRectDisplay(3));
-        cropRectDisplay(4) = min(stackSize(1) - cropRectDisplay(2), cropRectDisplay(4));
-        obj.prcOpts.cropRectDisplay = cropRectDisplay;
+        cropRectOutput(1:2) = max(1, cropRectOutput(1:2));
+        cropRectOutput(3) = min(stackSize(2) - cropRectOutput(1), cropRectOutput(3));
+        cropRectOutput(4) = min(stackSize(1) - cropRectOutput(2), cropRectOutput(4));
+        obj.prcOpts.cropRectOutput = cropRectOutput;
 
         obj.initPhaseCorrection();
 
@@ -989,8 +1169,8 @@ methods (Access = public)
             y0 = obj.worldCoords.scaling.Y.Offset;
             ySlope = obj.worldCoords.scaling.Y.Slope;
 
-            [xComp, yComp] = meshgrid(x0:xSlope:x0 + xSlope*(nx - 1), ...
-                                        y0:ySlope:y0 + ySlope*(ny - 1));
+            [xComp, yComp] = meshgrid(x0 + xSlope*(0:nx-1), ...
+                                        y0 + ySlope*(0:ny-1));
         end
 
         xComp = imcrop(xComp, obj.prcOpts.cropRect);
@@ -1026,12 +1206,7 @@ methods (Access = public)
         end
 
         % refresh the auto-selected phase-correction peak 
-        if isempty(obj.pCorrOpts.peakInd)
-            optInd = obj.findOptimalPeakInd();
-            if ~isnan(optInd)
-                obj.pCorrOpts.peakInd = optInd;
-            end
-        end
+        obj.refreshAutoPeak();
     end
 end
 
@@ -1040,7 +1215,7 @@ methods (Access = public)
     function showROI(obj)
         % Draw the domain rectangles on the reference image.
         % Overlays the computational domain (red), the unwrap margin (blue)
-        % and the display domain (green) for visual checking.
+        % and the output domain (green) for visual checking.
 
         figure;
         image = obj.imgData.refRaw;
@@ -1052,8 +1227,8 @@ methods (Access = public)
             image = insertText(image, obj.prcOpts.cropRectOrg(1:2), ...
                 'Computational domain', 'FontColor', 'red', 'FontSize', 20);
             % draw unwrap margin
-            mg = obj.prcOpts.unwrapMarginOrg;
-            unwrapRect = obj.prcOpts.cropRectOrg + [mg, mg, -2*mg, -2*mg];
+            mg = obj.prcOpts.unwrapMarginOrg;     % [mX mY]
+            unwrapRect = obj.prcOpts.cropRectOrg + [mg, -2*mg];
             image = insertShape(image, 'rectangle', unwrapRect, ...
                 'LineWidth', 5, 'ShapeColor', 'blue');
             image = insertText(image, unwrapRect(1:2) + [unwrapRect(3) 0], ...
@@ -1061,23 +1236,23 @@ methods (Access = public)
                 'FontSize', 20, 'AnchorPoint', 'RightTop');
         end
 
-        if ~isempty(obj.prcOpts.cropRectDisplayOrg)
-            absoluteCropDisplay = obj.prcOpts.cropRectDisplayOrg;
-            absoluteCropDisplay(1:2) = absoluteCropDisplay(1:2) + obj.prcOpts.cropRectOrg(1:2);
-            image = insertShape(image, 'rectangle', absoluteCropDisplay, ...
+        if ~isempty(obj.prcOpts.cropRectOutputOrg)
+            absoluteCropOutput = obj.prcOpts.cropRectOutputOrg;
+            absoluteCropOutput(1:2) = absoluteCropOutput(1:2) + obj.prcOpts.cropRectOrg(1:2);
+            image = insertShape(image, 'rectangle', absoluteCropOutput, ...
                 'LineWidth', 2, 'ShapeColor', 'green');
-            image = insertText(image, [absoluteCropDisplay(1), ...
-                absoluteCropDisplay(2) ...
-                + absoluteCropDisplay(4)], ...
-                'Display domain', 'FontColor', ...
+            image = insertText(image, [absoluteCropOutput(1), ...
+                absoluteCropOutput(2) ...
+                + absoluteCropOutput(4)], ...
+                'Output domain', 'FontColor', ...
                 'green', 'FontSize', 20, ...
                 'AnchorPoint', 'LeftBottom');
         end
         imshow(image, [])
     end
 
-    function [subarray, xCrop, yCrop] = getElevDisplaySubarray(obj, firstTimestep, lastTimestep)
-    % Crop the elevation stack to display frame and return.
+    function [subarray, xCrop, yCrop] = getElevOutputSubarray(obj, firstTimestep, lastTimestep)
+    % Crop the elevation stack to output frame and return.
         solveRange = obj.prcOpts.solveRange;
         [rowInds, colInds] = obj.outputInds();
         tRange = firstTimestep - solveRange(1) + 1:lastTimestep - solveRange(1) + 1; 
@@ -1091,8 +1266,8 @@ methods (Access = public)
         yCrop = obj.worldCoords.mesh.y(rowInds, colInds);
     end
 
-    function [subarray, xCrop, yCrop] = getPhaseDisplaySubarray(obj, firstTimestep, lastTimestep)
-    % Crop the phase stack to display frame and return.
+    function [subarray, xCrop, yCrop] = getPhaseOutputSubarray(obj, firstTimestep, lastTimestep)
+    % Crop the phase stack to output frame and return.
         solveRange = obj.prcOpts.solveRange;
         [rowInds, colInds] = obj.outputInds();
         tRange = firstTimestep - solveRange(1) + 1:lastTimestep - solveRange(1) + 1; 
@@ -1277,9 +1452,9 @@ methods (Access = public)
                 lastTimestep = obj.prcOpts.solveRange(1) + stackSize - 1;
             end
             if strcmpi(opts.quantity, "elev")
-                [dataArray, xCrop, yCrop] = getElevDisplaySubarray(obj, firstTimestep, lastTimestep);
+                [dataArray, xCrop, yCrop] = getElevOutputSubarray(obj, firstTimestep, lastTimestep);
             elseif strcmpi(opts.quantity, "phase")
-                [dataArray, xCrop, yCrop] = getPhaseDisplaySubarray(obj, firstTimestep, lastTimestep);
+                [dataArray, xCrop, yCrop] = getPhaseOutputSubarray(obj, firstTimestep, lastTimestep);
             end
 
         end
@@ -1494,9 +1669,9 @@ methods (Access = public)
             end
 
             if strcmpi(opts.quantity, "elev")
-                [dataArray, xCrop, yCrop] = getElevDisplaySubarray(obj, firstTimestep, lastTimestep);
+                [dataArray, xCrop, yCrop] = getElevOutputSubarray(obj, firstTimestep, lastTimestep);
             elseif strcmpi(opts.quantity, "phase")
-                [dataArray, xCrop, yCrop] = getPhaseDisplaySubarray(obj, firstTimestep, lastTimestep);
+                [dataArray, xCrop, yCrop] = getPhaseOutputSubarray(obj, firstTimestep, lastTimestep);
             end
         end
                
@@ -1886,6 +2061,27 @@ end
 
 %% ----------- Internal methods -----------
 methods (Access = private)
+    function refreshAutoPeak(obj)
+    % Fill an empty pCorrOpts.peakInd with the automatic choice, if one exists.
+        if isempty(obj.pCorrOpts.peakInd)
+            optInd = obj.findOptimalPeakInd();
+            if ~isnan(optInd)
+                obj.pCorrOpts.peakInd = optInd;
+            end
+        end
+    end
+
+    function rect = marginOutputRect(obj, offset)
+    % Output rectangle placed unwrap margin + offset inside the
+    % computational domain, in RAW pixels relative to cropRectOrg.
+    % Along an axis too short to hold the inset (1-D data) no inset is
+    % applied.
+        inset  = obj.prcOpts.unwrapMarginOrg + offset;     % [x y]
+        extent = obj.prcOpts.cropRectOrg(3:4);
+        inset  = inset .* (extent + 1 > 2*inset);
+        rect   = [inset + 1, extent - 2*inset];
+    end
+
     function initParams(obj)
     % Reset loop state and preallocate arrays used by solve().
     %   Refreshes the geometry (and the camera mesh of a reloaded case),
@@ -1894,7 +2090,7 @@ methods (Access = private)
     %   computational grid.
 
         if obj.outputConfig.elevOutput && strcmpi(obj.elevModel.type, 'none')
-            error("Elevation output is on but no elevation model is set." + ...
+            error("Elevation output is on but no elevation model is set. " + ...
                    "Call setElevModelTakeda or setElevModelPoly, or " + ...
                    "setStoredOutputs(elev=false).")
         end
@@ -1903,11 +2099,19 @@ methods (Access = private)
             error("Missing data: fringe.period")
         end
 
+        if strcmpi(obj.demodOpts.method, 'wavelet') ...
+                && (isempty(obj.demodOpts.waveletWavelengths) ...
+                    || isempty(obj.demodOpts.waveletDivisions))
+            error("The wavelet method needs a range of wavelet scales. Call " + ...
+                  "setDemodulation(waveletWavelengths=[min max], waveletDivisions=n), " + ...
+                  "with the wavelengths in RAW-frame pixels.")
+        end
+
         if ~obj.outputConfig.imageOutput ...
                 && ~obj.outputConfig.phaseOutput ...
                 && ~obj.outputConfig.elevOutput ...
                 && (diff(obj.prcOpts.solveRange) + 1 > 1)
-            error("All storage switches are off. Check outputConfig.")
+            error("All storage switches are off. Call setStoredOutputs().")
         end
 
         obj.loopState.stackInd = 0;
@@ -1918,12 +2122,12 @@ methods (Access = private)
         obj.pCorrOpts.warningTimesteps = [];
 
         rf = obj.prcOpts.resizeFactor;
-        rf_o = obj.prcOpts.resizeFactorDisplay;
+        rf_o = obj.prcOpts.resizeFactorOutput;
         Nt = diff(obj.prcOpts.solveRange) + 1;
         chunkLength = obj.outputConfig.chunkLength;
 
         % refresh coordinate mesh if running a case loaded from a .mat file
-        if isfield(obj.cameraCalib, 'addr') && ~isfield(obj.worldCoords.mesh, 'xOrg')
+        if ~isfield(obj.worldCoords.mesh, 'xOrg')
             if strlength(obj.cameraCalib.path) > 0 && strcmpi(obj.cameraCalib.type, 'Pinhole')
                 obj.readCameraCalibration(obj.cameraCalib.path, obj.cameraCalib.camNum);
             end
@@ -1977,7 +2181,7 @@ methods (Access = private)
     %   whose output switch is on and clears the others.
     
         [NyImg, NxImg] = size(obj.imgData.ref);
-        rf_o = obj.prcOpts.resizeFactorDisplay;
+        rf_o = obj.prcOpts.resizeFactorOutput;
         NyStack = ceil(rf_o * NyImg);
         NxStack = ceil(rf_o * NxImg);
     
@@ -2022,9 +2226,9 @@ methods (Access = private)
                 if isnan(optInd)
                     error("Spatial phase correction: no peak lies inside the output " + ...
                         "frame with a safety margin of %.3g fringe periods from the " + ...
-                        "'%s' edge on any phase-correction line. Enlarge the display " + ...
-                        "window, lower pCorrOpts.edgeSafetyFactor, or adjust the peak " + ...
-                        "detection settings.", ...
+                        "'%s' edge on any phase-correction line. Enlarge the output " + ...
+                        "window, or lower edgeSafetyFactor or adjust peakMinFrac and " + ...
+                        "peakProminenceFrac with setPhaseCorrection().", ...
                         obj.pCorrOpts.edgeSafetyFactor, obj.pCorrOpts.startEdge)
                 end
                 obj.pCorrOpts.peakInd = optInd;
@@ -2034,14 +2238,16 @@ methods (Access = private)
                 if isnan(optInd)
                     warning("Peak %g is missing or does not lie safely inside the output frame " + ...
                         "on phase-correction line(s) %s, and no peak satisfies the safety margin " + ...
-                        "of %.3g fringe periods from the '%s' edge. Enlarge the display window, " + ...
-                        "lower pCorrOpts.edgeSafetyFactor, or adjust the peak detection settings.", ...
+                        "of %.3g fringe periods from the '%s' edge. Enlarge the output window, " + ...
+                        "or lower edgeSafetyFactor or adjust peakMinFrac and peakProminenceFrac " + ...
+                        "with setPhaseCorrection().", ...
                         obj.pCorrOpts.peakInd, lineStr, obj.pCorrOpts.edgeSafetyFactor, obj.pCorrOpts.startEdge)
                 else
                     warning("Peak %g is missing or does not lie safely inside the output frame " + ...
                         "on phase-correction line(s) %s. Optimal peak number: %g (closest usable " + ...
                         "peak to the '%s' edge with a safety margin of %.3g fringe periods). " + ...
-                        "Call setTrackedPeakInd(%g), or setTrackedPeakInd([]) to select the peak automatically.", ...
+                        "Call setPhaseCorrection(trackedPeak=%g), or setPhaseCorrection(trackedPeak=[]) " + ...
+                        "to select the peak automatically.", ...
                         obj.pCorrOpts.peakInd, lineStr, optInd, obj.pCorrOpts.startEdge, ...
                         obj.pCorrOpts.edgeSafetyFactor, optInd)
                 end
@@ -2070,7 +2276,7 @@ methods (Access = private)
             end
         end
 
-        if obj.prcOpts.smoothRefImg
+        if obj.prcOpts.refImgSmoothing
             if strcmpi(obj.fringe.normAxis, 'Y')
                 obj.imgData.ref = imgaussfilt(obj.imgData.ref, [1e-06 5]);
             else
@@ -2118,10 +2324,6 @@ methods (Access = private)
         if obj.prcOpts.resizeFactor ~= 1
             obj.imgData.curr = imresize(obj.imgData.curr, obj.prcOpts.resizeFactor);
         end
-
-        % if ~isempty(obj.rotationAngle)
-        %     obj.imgData.curr = imrotate(obj.imgData.curr, obj.rotationAngle, "bicubic");
-        % end
 
         if ~isempty(obj.prcOpts.cropRect)
             obj.imgData.curr = imcrop(obj.imgData.curr, obj.prcOpts.cropRect);
@@ -2362,8 +2564,8 @@ methods (Access = private)
     %                 frame), embedRows/embedCols, pixel meshes, cropRect,
     %                 rawSize
     
-        if obj.prcOpts.resizeFactor ~= 1 || obj.prcOpts.resizeFactorDisplay ~= 1
-            error("Run solve() with resizeFactor and resizeFactorDisplay set to 1")
+        if obj.prcOpts.resizeFactor ~= 1 || obj.prcOpts.resizeFactorOutput ~= 1
+            error("Run solve() with resizeFactor and resizeFactorOutput set to 1")
         end
         if size(obj.phaseData.stack, 3) ~= length(heightVec)
             error("Size of phase array incompatible with length of heightVec.")
@@ -2375,14 +2577,12 @@ methods (Access = private)
         weights   = weights(:);
         
         % crop interior inside the unwrap margin
-        mg       = obj.prcOpts.unwrapMarginOrg;
+        mg       = obj.prcOpts.unwrapMargin;      % [mX mY], COMP (= RAW, rf = 1)
         cropRect = obj.prcOpts.cropRect;
     
         geom.cropRect  = cropRect;
-        geom.calibRect = [mg + 1, mg + 1, ...
-            cropRect(3) - 2*mg, cropRect(4) - 2*mg];     % crop frame
-        geom.rawRect   = [cropRect(1) + mg, cropRect(2) + mg, ...
-            cropRect(3) - 2*mg, cropRect(4) - 2*mg];     % RAW frame
+        geom.calibRect = [mg + 1, cropRect(3:4) - 2*mg];              % crop frame
+        geom.rawRect   = [cropRect(1:2) + mg, cropRect(3:4) - 2*mg];  % RAW frame
         geom.embedRows = geom.rawRect(2) : geom.rawRect(2) + geom.rawRect(4);
         geom.embedCols = geom.rawRect(1) : geom.rawRect(1) + geom.rawRect(3);
     
@@ -2411,22 +2611,22 @@ methods (Access = private)
     %   unwrap margin (optionally refining with unwrap2D), detects
     %   residual gradient outliers, records their bounding boxes in
     %   postData.phaseAnomalies for the current frame, and finally
-    %   resizes the phase map to the output frame.
+    %   resizes the phase map to the STACK frame.
 
-        if ~obj.prcOpts.unwrapEnabled
+        if strcmpi(obj.prcOpts.unwrapMethod, 'none')
             obj.phaseData.curr = imresize(obj.phaseData.curr, ...
-                obj.prcOpts.resizeFactorDisplay, ...
+                obj.prcOpts.resizeFactorOutput, ...
                 'bilinear', Antialiasing=false);
             return
         end
         [ny,nx] = size(obj.phaseData.curr);
         sumOutliers = inf;
-        rf_o = obj.prcOpts.resizeFactorDisplay;
-        margin = round(obj.prcOpts.unwrapMargin / rf_o); 
+        rf_o = obj.prcOpts.resizeFactorOutput;
+        margin = obj.prcOpts.unwrapMargin;    % [mX mY], COMP
 
         % no margin along a dimension too short to have one (1-D data)
-        mRow = margin * (ny > 2*margin);
-        mCol = margin * (nx > 2*margin);
+        mRow = margin(2) * (ny > 2*margin(2));
+        mCol = margin(1) * (nx > 2*margin(1));
         rows = mRow + 1:ny - mRow;
         cols = mCol + 1:nx - mCol;
 
@@ -2471,17 +2671,17 @@ methods (Access = private)
                 rectArr = cat(1, regions([regions.Area] > 3).BoundingBox);
 
                 if ~isempty(rectArr)
-                    dispRect = round(obj.prcOpts.cropRectDisplay); 
+                    outputRect = round(obj.prcOpts.cropRectOutput); 
                     rectArr(:, 1:2) = (rectArr(:, 1:2) + [mCol, mRow] - 0.5)*rf_o + 0.5;
                     rectArr(:, 3:4) = rectArr(:, 3:4)*rf_o;
-                    rectArr(:, 1:2) = rectArr(:, 1:2) - dispRect(1:2) + 1;
+                    rectArr(:, 1:2) = rectArr(:, 1:2) - outputRect(1:2) + 1;
 
                     % Clip the bottom-right to limits of the OUTPUT frame
-                    bottomRightLims = dispRect(3:4) + 1.5;
+                    bottomRightLims = outputRect(3:4) + 1.5;
                     bottomRight = min(rectArr(:, 1:2) + rectArr(:, 3:4), ...
                                       bottomRightLims);
 
-                    % Clip the top-left coordinates to a minimum of 1
+                    % Clip the top-left coordinates to a minimum of 0.5
                     rectArr(:, 1:2) = max(0.5, rectArr(:, 1:2));
 
 
@@ -2508,8 +2708,8 @@ methods (Access = private)
         obj.phaseData.curr = imresize(obj.phaseData.curr, rf_o, ...
                                         'bilinear', Antialiasing=false);
 
-        % Mark as invalid every resized pixel whose centre lies in the margin.
-        % Output pixel k is centred at (k - 0.5)/rf_o + 0.5 in the input.
+        % mark as invalid every resized pixel whose centre lies in the margin
+        % resized pixel k is centered at (k - 0.5)/rf_o + 0.5 in the input
         [nyS, nxS] = size(obj.phaseData.curr);
         rowCentres = FtpSolver.rescaleCoord(1:nyS, 1/rf_o);
         colCentres = FtpSolver.rescaleCoord(1:nxS, 1/rf_o);
@@ -2559,12 +2759,7 @@ methods (Access = private)
             if temporalJump ~= 0
                 obj.phaseData.curr = obj.phaseData.curr + temporalJump;
             end
-        else                        % spatial or manual phase correction
-            if ~isempty(obj.pCorrOpts.manualVals)
-                obj.phaseData.curr = obj.phaseData.curr + obj.pCorrOpts.manualVals(obj.loopState.timestep);
-                return
-            end
-
+        else                        % spatial phase correction
             peaksCurr = obj.pCorrOpts.peaksCurr;
             peaksRef = obj.pCorrOpts.peaksRef;
             localPeriod = obj.pCorrOpts.localPeriod;
@@ -2657,12 +2852,12 @@ methods (Access = private)
                                        obj.elevModel.poly.coeffMat);
         end
         
-        if obj.prcOpts.lateralShiftCorrection
-            obj.resampleAtTrueCoords()
+        if obj.prcOpts.parallaxCorrection
+            obj.correctParallax()
         end
     end
 
-    function resampleAtTrueCoords(obj)
+    function correctParallax(obj)
     % Resample elevData.curr onto the nominal world grid.
     %
     %   A pinhole camera sees each surface point along a slanted ray, so the
@@ -2676,12 +2871,18 @@ methods (Access = private)
             return
         end
 
-        % Crop away the unwrap margin
-        mrg = obj.prcOpts.unwrapMargin;
+        % The unwrap margin is NaN after unwrapAndFlag and is dropped below
+        % together with any other invalid pixels. Without unwrapping it is
+        % not masked and enters the resampling.
+        if strcmpi(obj.prcOpts.unwrapMethod, 'none') && obj.loopState.isFirstTimestep
+            warning("FtpSolver:parallaxCorrectionWithoutUnwrap", ...
+                "Parallax error correction is on but unwrapping is disabled. " + ...
+                "The unwrap margin is not masked and is included in the resampling.")
+        end
 
-        elevCrop = FtpSolver.cropOutMargin(obj.elevData.curr, mrg);
-        u        = FtpSolver.cropOutMargin(obj.worldCoords.mesh.xPixel, mrg);
-        v        = FtpSolver.cropOutMargin(obj.worldCoords.mesh.yPixel, mrg);
+        elev = obj.elevData.curr;
+        u    = obj.worldCoords.mesh.xPixel;
+        v    = obj.worldCoords.mesh.yPixel;
     
         % Back-project every pixel to a world-frame camera ray
         K_inv = inv(obj.cameraCalib.intrinsicsMatlab.K);
@@ -2699,30 +2900,30 @@ methods (Access = private)
         % gives the correct sign either way.
         zSign = -sign(rinvT(3));
 
-        kField = (zSign * elevCrop(:)' + rinvT(3)) ./ RKuv(3, :);
+        kField = (zSign * elev(:)' + rinvT(3)) ./ RKuv(3, :);
         res    = RKuv .* kField - rinvT;    % 3 x N true world positions
         
         X_corr = res(1, :);
         Y_corr = res(2, :);
 
         % handle NaN values
-        ok = isfinite(X_corr) & isfinite(Y_corr) & isfinite(elevCrop(:)');
+        ok = isfinite(X_corr) & isfinite(Y_corr) & isfinite(elev(:)');
 
         % 1-D data
         if min(size(obj.imgData.ref)) < 2
-            elevCrop = elevCrop(:);
+            elev = elev(:);
             if strcmpi(obj.fringe.normAxis, 'X')
-                obj.elevData.curr = interp1(X_corr(ok), elevCrop(ok), ...
+                obj.elevData.curr = interp1(X_corr(ok), elev(ok), ...
                                             obj.worldCoords.mesh.x, 'linear');
             else
-                obj.elevData.curr = interp1(Y_corr(ok), elevCrop(ok), ...
+                obj.elevData.curr = interp1(Y_corr(ok), elev(ok), ...
                                             obj.worldCoords.mesh.y, 'linear');
             end
             return
         end
     
         % 2-D data
-        F = scatteredInterpolant(X_corr(ok)', Y_corr(ok)', elevCrop(ok)', ...
+        F = scatteredInterpolant(X_corr(ok)', Y_corr(ok)', elev(ok)', ...
                                  'linear', 'none');
         obj.elevData.curr = F(obj.worldCoords.mesh.x, obj.worldCoords.mesh.y);
     end
@@ -2779,17 +2980,17 @@ methods (Access = private)
             if obj.outputConfig.elevOutput
                 filename = fullfile(addr, obj.caseID + "_elevData.bin");
 
-                displayArr = obj.getElevDisplaySubarray(solveRange(1), solveRange(2));
+                outputArr = obj.getElevOutputSubarray(solveRange(1), solveRange(2));
 
-                FtpSolver.writeTimeSeriesBinary(filename, displayArr);
+                FtpSolver.writeTimeSeriesBinary(filename, outputArr);
             end
 
             if obj.outputConfig.phaseOutput
                 filename = fullfile(addr, obj.caseID + "_phaseData.bin");
 
-                [displayArr, ~, ~] = obj.getPhaseDisplaySubarray(solveRange(1), solveRange(2));
+                [outputArr, ~, ~] = obj.getPhaseOutputSubarray(solveRange(1), solveRange(2));
 
-                FtpSolver.writeTimeSeriesBinary(filename, displayArr);
+                FtpSolver.writeTimeSeriesBinary(filename, outputArr);
             end
         end
     
@@ -2826,7 +3027,7 @@ methods (Access = private)
         if obj.outputConfig.elevOutput
             chunkFilename = obj.chunkFilePath(chunkIndex, "elevData");
 
-            chunkArr = obj.getElevDisplaySubarray(solveRange(1), ...
+            chunkArr = obj.getElevOutputSubarray(solveRange(1), ...
                 solveRange(1) + size(obj.elevData.stack, 3) - 1);
 
             FtpSolver.writeTimeSeriesBinary(chunkFilename, chunkArr);
@@ -2835,7 +3036,7 @@ methods (Access = private)
         if obj.outputConfig.phaseOutput
             chunkFilename = obj.chunkFilePath(chunkIndex, "phaseData");
 
-            chunkArr = obj.getPhaseDisplaySubarray(solveRange(1), ...
+            chunkArr = obj.getPhaseOutputSubarray(solveRange(1), ...
                 solveRange(1) + size(obj.phaseData.stack, 3) - 1);
 
             FtpSolver.writeTimeSeriesBinary(chunkFilename, chunkArr);
@@ -2971,7 +3172,7 @@ methods (Access = private)
 
     function [rowInds, colInds] = outputInds(obj)
         % Row and column indices of the OUTPUT frame
-        r = round(obj.prcOpts.cropRectDisplay);
+        r = round(obj.prcOpts.cropRectOutput);
         [Ny, Nx] = size(obj.worldCoords.mesh.x);
         rowInds = r(2) : min(Ny, r(2) + r(4));
         colInds = r(1) : min(Nx, r(1) + r(3));
@@ -2980,7 +3181,7 @@ methods (Access = private)
     function output = RAW2STACK(obj, input)
         % Convert (row, col) values from RAW to STACK frame
         rf = obj.prcOpts.resizeFactor;
-        rf_o = obj.prcOpts.resizeFactorDisplay;
+        rf_o = obj.prcOpts.resizeFactorOutput;
         cropRect = obj.prcOpts.cropRect;
 
         rows = input(:,1);
@@ -3239,11 +3440,9 @@ methods (Access = private, Static)
     function output = defaultPCorrOpts()
         output.method = "temporal";
         output.lineInds = [];
-        output.arr = [];
         output.startEdge = "left";
         output.edgeSafetyFactor = 2.5;
         output.peakInd = [];
-        output.manualVals = [];
         output.peakPromFrac = 1/4;
         output.peakMinFrac = 1/3;
         output.warningTimesteps = [];
@@ -3253,6 +3452,8 @@ methods (Access = private, Static)
         output.method = "fourier";
         output.scaleList = [];
         output.angleList = 0;
+        output.waveletWavelengths = [];   % [min max], RAW px
+        output.waveletDivisions = [];
         output.sigma = 0.6;
         output.gamma = 1;
         output.filtWidthFrac = 0.6;
@@ -3273,25 +3474,25 @@ methods (Access = private, Static)
 
     function output = defaultPrcOpts()
         output.solveRange = [];
-        output.unwrapEnabled = true;
         output.unwrapMethod = "1D";
-        output.unwrapMarginOrg = 20;
-        output.unwrapMargin = [];
-        output.imgRotAngle = 0; % in degrees and positive clockwise
-        output.lateralShiftCorrection = false;
+        output.unwrapMarginSetting = [];    % [acrossFringe alongFringe] RAW px
+        output.unwrapMarginOrg = [];        % [marginX marginY], RAW frame
+        output.unwrapMargin = [];           % [marginX marginY], COMP frame
+        output.imgRotAngle = 0;             % in degrees and positive clockwise
+        output.parallaxCorrection = false;
         output.discardThreshold = [];
         output.dcSubtraction = true;
-        output.smoothRefImg = false;
+        output.refImgSmoothing = false;
         output.interpBurntPixelMethod = 'fastLinear';
         output.burntPixelMask = [];
         output.burntPixelRows = [];
         output.burntPixelCols = [];
         output.cropRectOrg = [];
         output.cropRect = [];
-        output.cropRectDisplayOrg = [];
-        output.cropRectDisplay = [];
+        output.cropRectOutputOrg = [];
+        output.cropRectOutput = [];
         output.resizeFactor = 1;
-        output.resizeFactorDisplay = 0.5;
+        output.resizeFactorOutput = 0.5;
     end
 
     function output = defaultLoopState()
@@ -3406,24 +3607,6 @@ methods (Access = private, Static)
             imgOut(r, c, :) = (img(r-1, c, :) + img(r+1, c, :) + ...
                 img(r, c-1, :) + img(r, c+1, :)) / 4;
         end
-    end
-
-    function croppedArr = cropOutMargin(arr, margin)
-        [Ny, Nx] = size(arr);
-
-        if Ny > 2*margin
-            y = margin + 1 : Ny - margin;
-        else
-            y = 1:Ny;
-        end
-
-        if Nx > 2*margin
-            x = margin + 1 : Nx - margin;
-        else
-            x = 1:Nx;
-        end
-
-        croppedArr = arr(y, x);
     end
 
     function out = rescaleCoord(x, scale)
