@@ -702,11 +702,13 @@ methods (Access = public)
     %   Spatial method:
     %   trackedPeak        - index of the tracked fringe peak, counted from
     %                        startEdge; [] selects it automatically
-    %   edgeSafetyFactor   - the automatic selection picks the first peak
-    %                        at least this many fringe periods from 
-    %                        startEdge (default 2.5)
-    %   startEdge          - edge the peaks are counted from: "left" or
-    %                        "right" when fringe.normAxis is "X", "top" or
+    %   edgeSafetyFactor   - the automatic selection picks the first peak at
+    %                        least this many fringe periods inside the output
+    %                        window, measured from its startEdge side
+    %                        (default 2.5)
+    %   startEdge          - edge of the full image (not the computational
+    %                        domain) from which the peaks are counted: "left"
+    %                        or "right" when fringe.normAxis is "X", "top" or
     %                        "bottom" when it is "Y"
     %   peakMinFrac        - minimum peak height, as a fraction of the
     %                        median intensity on the line (default 1/3)
