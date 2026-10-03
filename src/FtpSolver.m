@@ -477,14 +477,14 @@ methods (Access = public)
         obj.elevModel.d = d;
     end
 
-    function setElevModelPoly(obj, addr)
+    function setElevModelPoly(obj, path)
         % Select a polynomial phase-to-height model and load calibration data from a .mat file.
         %   Input:
         %   addr - .mat file written by writePolyCalibration()
 
         obj.elevModel.type = 'poly';
-        obj.elevModel.poly = load(addr);
-        obj.elevModel.polyAddr = addr;
+        obj.elevModel.poly = load(path);
+        obj.elevModel.polyPath = path;
         if ~isfield(obj.elevModel, 'pixelwise')
             obj.elevModel.pixelwise = true;
         end
@@ -3126,8 +3126,8 @@ methods (Access = private)
         obj.loadDataset(obj.source.dataPath);
 
         obj.scaleAndTransformRef();
-        if strcmpi(obj.elevModel.type, 'poly') && isfield(obj.elevModel, 'polyAddr')
-            obj.setElevModelPoly(obj.elevModel.polyAddr)
+        if strcmpi(obj.elevModel.type, 'poly') && isfield(obj.elevModel, 'polyPath')
+            obj.setElevModelPoly(obj.elevModel.polyPath)
         end
     end
 

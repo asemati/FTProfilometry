@@ -4,8 +4,8 @@
 
 `FtpSolver` is a MATLAB class that reconstructs surface elevation fields from
 sequences of fringe-pattern images using **Fourier Transform Profilometry (FTP)**.
-It is aimed at time-resolved measurements — for example, the global measurement of
-water waves — where a full height field must be recovered for every frame of a
+It is aimed at time-resolved measurements, for example, the global measurement of
+water waves, where a full height field must be recovered for every frame of a
 recording.
 
 <picture>
@@ -21,7 +21,7 @@ recording.
 - **Two phase-correction strategies:** spatial and temporal, for handling uncertainty in the absolute phase. 
 - **Multiple input formats:** standard image formats (`.png`, `.tiff`, `.bmp`, `.jpg`), plus LaVision DaVis `.set` and `.im7`.
 - **Camera calibration support**: reads pinhole and polynomial calibrations for real-world scaling and de-warping.
-- **Correction of height-induced lateral displacement**: a camera viewing the surface along a slanted ray samples a point that is displaced in-plane whenever the surface sits away from the reference plane. With a pinhole calibration available, setting `prcOpts.lateralShiftCorrection` back-projects every pixel to its true world position and resamples the height field onto the nominal mesh, removing that displacement regardless of camera tilt and position.
+- **Correction of height-induced lateral displacement**: a camera viewing the surface along a slanted ray samples a point that is displaced in-plane whenever the surface sits away from the reference plane. With a pinhole calibration available, calling `setParallaxCorrection(true)` back-projects every pixel to its true world position and resamples the height field onto the nominal mesh, removing that displacement regardless of camera tilt and position.
 - **Automatic outlier detection**: detects abnormally high phase gradients (usually due to debris on the surface) and stores the positions per timestep in `postData.phaseAnomalies`. 
 - **Analysis and output:** animation of surfaces/phase and export of results.
 
@@ -59,7 +59,8 @@ demoCase = FtpSolver("demoCase", ...              % case ID must be a valid MATL
     cropRect      = [100 100 1000 600] ...       % computational domain (X, Y, Width, Height)
     );    
 
-demoCase.setRange(1,100);             % set solve range from frame 1 to 100
+demoCase.setSolveRange(1,100);             % set solve range from frame 1 to 100
+demoCase.setElevModelTakeda(cameraHeight, cameraProjectorSeparation);
 demoCase.solve();                     % run the full FTP pipeline over the solve range
 demoCase.animate(1, 100, 10);         % animate timesteps 1–100 at 10 fps
 demoCase.writeCase("path/to/output");
@@ -94,7 +95,7 @@ The phase-to-height conversion uses one of two models:
 
 The `poly` calibration is built from a stack of reference planes at
 known heights (`heightVec`) and **requires the solver to be run at full resolution**
-(`resizeFactor = 1`, `resizeFactorOutput = 1`). Run `calibModeOn()` before `calibratePoly(...)` to set these parameters automatically. Calibration coefficients can be saved and reloaded with `writePolyCalibration` / `setElevModelPoly`.
+(`resizeFactor = 1`, `resizeFactorOutput = 1`). Run `calibModeOn()` before `solve()` to set these parameters automatically. Calibration coefficients can be saved and reloaded with `writePolyCalibration` / `setElevModelPoly`.
 
 ## Key methods
 
@@ -109,12 +110,12 @@ known heights (`heightVec`) and **requires the solver to be run at full resoluti
 | `animate`                             | Visualize the reconstructed surface / phase.          |
 | `exportVideo`                         | Export a video of the surface / phase.                |
 | `writeCase`                           | Save results to binary and `.mat` files.              |
-| `readData`                            | Read surface elevation / phase data `.bin` files.     |
+| `readBinary`                          | Read surface elevation / phase data `.bin` files.     |
 
 
 ## Output format
 
-`writeCase` writes results as binary (`*_elevData.bin` and `*_phaseData.bin`) files. Each file stores the number of dimensions and the array size as uint32, and the data as single-precision values. Use the helper function `FtpSolver.readData(addr, seekTime)` to read them back into MATLAB. The class object itself, minus the surface and phase data, is written to a `.mat` file. Coordinate arrays are written to a separate `coordinateMesh.mat` file.
+`writeCase` writes results as binary (`*_elevData.bin` and `*_phaseData.bin`) files. Each file stores the number of dimensions and the array size as uint32, and the data as single-precision values. Use the helper function `FtpSolver.readBinary(addr, seekTime)` to read them back into MATLAB. The class object itself, minus the surface and phase data, is written to a `.mat` file. Coordinate arrays are written to a separate `coordinateMesh.mat` file.
 
 ## Citation
 This implementation is based on the FTP method described in:

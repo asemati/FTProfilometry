@@ -28,11 +28,11 @@ calibCase = FtpSolver("calibCase", ...
     );    
 
 calibCase.calibModeOn();
-calibCase.setDisplayFromMargin(0);
+calibCase.setOutputRectFromMargin(0);
 calibCase.showROI();
 
 % use the 15th fringe peak for phase correction
-% set tracked peak after setDisplayFromMargin, which resets it
+% set tracked peak after setOutputRectFromMargin, which resets it
 calibCase.setPhaseCorrection(method="spatial", trackedPeak=15)
 calibCase.setDemodulation(method="wavelet", waveletWavelengths=[28 36], ...
                                     waveletDivisions=10, waveletAngles=-90);
