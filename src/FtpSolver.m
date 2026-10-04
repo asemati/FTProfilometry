@@ -16,9 +16,10 @@ classdef FtpSolver < handle
 %                             camCalibPath="path/to/calibration.mat" ...
 %                             );
 %     profCase.setROI();
+%     profCase.setSaveFolder("path/to/results");
 %     profCase.solve();
 %     profCase.animate(1, 100, framesPerSecond);
-%     profCase.writeCase(outputDir);
+%     profCase.writeCase();
 %
 %   KEY METHODS
 %     solve             - Run the full processing pipeline
@@ -26,7 +27,9 @@ classdef FtpSolver < handle
 %     calibratePoly     - Calibrate phase-to-height model
 %     probe             - Extract time series at a spatial location
 %     animate           - Visualize the reconstructed surface
-%     writeCase         - Save results
+%     setSaveFolder     - Choose where writeCase (and chunked output) writes
+%     writeCase         - Save results, settings log and object
+%     readData    - Read frames back from a saved result file
 %
 %   DEPENDENCIES
 %     xml2struct, rectifyImagePinhole, readDavisCalibration
@@ -64,7 +67,7 @@ properties (SetAccess = private)
     worldCoords         % spatial coordinates
     elevModel           % phase to elevation conversion parameters
     outputConfig        % output/save control
-    postData            % outlier coordinates
+    diagnostics         % information about possible failures during the run
 end
 
 %% ----------- Setup and solve() -----------
@@ -91,20 +94,21 @@ methods (Access = public)
             error("caseID must be a valid variable name.")
         end
 
-        obj.caseID      = char(caseID);
-        obj.source      = FtpSolver.defaultSource();
-        obj.imgData     = FtpSolver.defaultImgData();
-        obj.phaseData   = FtpSolver.defaultPhaseData();
-        obj.elevData    = FtpSolver.defaultElevData();
-        obj.fringe      = FtpSolver.defaultFringe();
-        obj.pCorrOpts   = FtpSolver.defaultPCorrOpts();
-        obj.demodOpts   = FtpSolver.defaultDemodOpts();
-        obj.prcOpts     = FtpSolver.defaultPrcOpts();
-        obj.loopState   = FtpSolver.defaultLoopState();
-        obj.cameraCalib = FtpSolver.defaultCameraCalib();
-        obj.worldCoords = FtpSolver.defaultWorldCoords();
-        obj.elevModel   = FtpSolver.defaultElevModel();
-        obj.outputConfig = FtpSolver.defaultOutputConfig();            
+        obj.caseID          = char(caseID);
+        obj.source          = FtpSolver.defaultSource();
+        obj.imgData         = FtpSolver.defaultImgData();
+        obj.phaseData       = FtpSolver.defaultPhaseData();
+        obj.elevData        = FtpSolver.defaultElevData();
+        obj.fringe          = FtpSolver.defaultFringe();
+        obj.pCorrOpts       = FtpSolver.defaultPCorrOpts();
+        obj.demodOpts       = FtpSolver.defaultDemodOpts();
+        obj.prcOpts         = FtpSolver.defaultPrcOpts();
+        obj.loopState       = FtpSolver.defaultLoopState();
+        obj.cameraCalib     = FtpSolver.defaultCameraCalib();
+        obj.worldCoords     = FtpSolver.defaultWorldCoords();
+        obj.elevModel       = FtpSolver.defaultElevModel();
+        obj.outputConfig    = FtpSolver.defaultOutputConfig();            
+        obj.diagnostics     = FtpSolver.defaultDiagnostics();            
 
 
         obj.prcOpts.resizeFactor        = opts.resizeFactor;
@@ -175,9 +179,10 @@ methods (Access = public)
         % Run the full processing pipeline over solveRange.
         % Prepares the reference image, then for every frame: load,
         % preprocess, demodulate, unwrap, phase-correct, convert to
-        % elevation and store. Frames flagged as invalid are stored as NaN,
-        % and with chunked output on, each full chunk is written to a
-        % temporary file. These files are merged when the user calls writeCase().
+        % elevation and store. Frames flagged as invalid are stored as NaN.
+        % With chunked output on, the result files are created in the save
+        % folder at the start, and each chunk is written into them at its
+        % frame offset as soon as it is full.
 
         t0 = tic();
         
@@ -456,6 +461,9 @@ methods (Access = public)
     % Choose which quantities solve() keeps in memory and writeCase() writes.
     %   setStoredOutputs(elev=true, phase=false, images=false)
     %   Quantities not named keep their current setting.
+    %   Elevation and phase are each written to their own HDF5 file.
+    %   Images are kept in memory (imgData.stack) for debugging only:
+    %   they are never written, and cannot be stored with chunked output.
         arguments
             obj
             opts.elev   (1,1) logical = obj.outputConfig.elevOutput
@@ -541,18 +549,20 @@ methods (Access = public)
 
     function setSolveRange(obj, r1, r2)
     % Set the frame range processed by solve().
-    %   In:  r1 - first frame, or 'full' to use the whole dataset
-    %        r2 - last frame (ignored when r1 is 'full')
-
-        if strcmpi(r1, 'full')
-            obj.prcOpts.solveRange = obj.source.fullRange;
-            return
+    % Call without arguments to process all available images.
+    %   Inputs:
+    %           r1 - first frame
+    %           r2 - last frame
+        arguments
+            obj
+            r1 (1,1) double {mustBeInteger, mustBePositive} = obj.source.fullRange(1)
+            r2 (1,1) double {mustBeInteger, mustBePositive} = obj.source.fullRange(2);
         end
-        if r2 > obj.source.fullRange(2) || r1 < 1
+        
+        if r2 > obj.source.fullRange(2) || r1 > r2
             error("Invalid input. Available data range is [1 %g]", obj.source.fullRange(2));
         end
         obj.prcOpts.solveRange = [r1 r2];
-
     end
     
     function setROI(obj)
@@ -570,8 +580,8 @@ methods (Access = public)
 
         while true
             rect = drawrectangle(tempHndl.Parent);
-            rect.Position = round(rect.Position);
             if isvalid(rect)
+                rect.Position = round(rect.Position);
                 if ~isempty(rect.Position)
                     obj.prcOpts.cropRectOrg = round(rect.Position);
                     obj.prcOpts.cropRectOutputOrg = [];   % refilled by updateGeometry
@@ -699,6 +709,9 @@ methods (Access = public)
     %               Requires the tracked peak to remain visible throughout
     %               the recording.
     %            "none": leave the unwrapped phase as is.
+    %   numSamples         - number of points (temporal) or lines (spatial)
+    %                        used for the phase correction algorithm
+    %
     %   Spatial method:
     %   trackedPeak        - index of the tracked fringe peak, counted from
     %                        startEdge; [] selects it automatically
@@ -715,12 +728,13 @@ methods (Access = public)
     %   peakProminenceFrac - minimum peak prominence, as a fraction of the
     %                        5-95 percentile intensity range on the line
     %                        (default 1/4)
-    %   Naming startEdge, edgeSafetyFactor, peakMinFrac or
+    %   Naming startEdge, edgeSafetyFactor, peakMinFrac, numSamples or
     %   peakProminenceFrac restores automatic peak selection, unless
     %   trackedPeak is named in the same call.
         arguments
             obj
             opts.method             (1,1) string {mustBeMember(opts.method, ["spatial", "temporal", "none"])}
+            opts.numSamples         (1,1) double {mustBeInteger, mustBePositive}
             opts.trackedPeak        {mustBeNumeric, mustBeScalarOrEmpty, mustBeInteger, mustBePositive}
             opts.edgeSafetyFactor   (1,1) double {mustBePositive}
             opts.startEdge          (1,1) string {mustBeMember(opts.startEdge, ["left", "right", "top", "bottom"])}
@@ -730,6 +744,11 @@ methods (Access = public)
         if isfield(opts, 'method')
             obj.pCorrOpts.method = opts.method;
         end
+        if isfield(opts, 'numSamples')
+            obj.pCorrOpts.numSamples = opts.numSamples;
+            obj.initPhaseCorrection();
+        end
+
         if isfield(opts, 'startEdge')
             if strcmpi(obj.fringe.normAxis, 'Y')
                 validEdges = ["top", "bottom"];
@@ -754,7 +773,7 @@ methods (Access = public)
 
         if isfield(opts, 'trackedPeak')
             obj.pCorrOpts.peakInd = double(opts.trackedPeak);
-        elseif any(isfield(opts, {'startEdge', 'edgeSafetyFactor', ...
+        elseif any(isfield(opts, {'startEdge', 'numSamples', 'edgeSafetyFactor', ...
                                   'peakMinFrac', 'peakProminenceFrac'}))
             obj.pCorrOpts.peakInd = [];
         end
@@ -923,19 +942,17 @@ methods (Access = public)
         obj.cameraCalib.camNum = camNumber;
     end
 
-    function enableChunkedOutput(obj, chunkFolder, chunkLength)
-    % Hold results in memory in chunks and flush each to disk.
-    %   Store only chunks of chunkLength timesteps in memory. Temporary 
-    %   chunk files are saved to path chunkFolder/TEMP_chunks_<caseID>
-    %   and are merged into a single file when the user calls writeCase().
-    %   Temporary files are deleted after they are merged.
+    function enableChunkedOutput(obj, chunkLength)
+    % Hold results in memory in chunks and write each to disk as it fills.
+    %   Keeps only chunkLength timesteps in memory. solve() creates the
+    %   result files in <saveFolder>/<caseID> at the start of the run and
+    %   writes every chunk straight into them at its frame offset.
+    %   Requires setSaveFolder() before solve(). Images cannot be stored.
         arguments
             obj
-            chunkFolder string {mustBeFolder}
             chunkLength (1,1) double {mustBeInteger, mustBePositive}
         end
         obj.outputConfig.chunkLength = chunkLength;
-        obj.outputConfig.chunkFolder = chunkFolder;
         obj.outputConfig.chunkedOutput = true;
     end
 
@@ -944,15 +961,63 @@ methods (Access = public)
         obj.outputConfig.chunkedOutput = false;
     end
 
-    function writeCase(obj, addr)
-    % Save FtpSolver object, data binaries and coordinate mesh to a folder named <caseID>.
-        if ~isfolder(fullfile(addr, obj.caseID))
-            mkdir(fullfile(addr, obj.caseID))
+    function setSaveFolder(obj, folder)
+    % Set the folder that results are saved to.
+    %   writeCase() writes into the subfolder <folder>/<caseID>, which is
+    %   created if needed. With chunked output, solve() also writes the
+    %   result files there while it runs.
+        arguments
+            obj
+            folder {mustBeTextScalar, mustBeFolder}
+        end
+        % store the absolute path
+        listing = dir(folder);
+        obj.outputConfig.saveFolder = string(listing(1).folder);
+    end
+
+    function writeCase(obj)
+    % Save results, settings and the object to <saveFolder>/<caseID>.
+    %   Files written:
+    %     <caseID>_elevation.h5     - surface elevation (mm), if stored
+    %     <caseID>_phase.h5         - phase (rad), if stored
+    %     coordinateMesh.mat        - xMesh, yMesh (mm) of the result arrays
+    %     <caseID>_diagnostics.mat  - possible unwrapping faults (flagged
+    %                                 regions, per frame) and frames where
+    %                                 phase correction failed
+    %     <caseID>_log.txt          - solver settings and run summary
+    %     <caseID>.mat              - the FtpSolver object, without data
+    %   With chunked output the .h5 files are written by solve(); here
+    %   they are only checked for missing frames. Read result files with
+    %   FtpSolver.readData().
+        folder = obj.caseFolder();
+        if ~isfolder(folder)
+            mkdir(folder)
         end
 
         temp.(obj.caseID) = obj;
-        save(fullfile(addr, obj.caseID, obj.caseID + ".mat"), '-struct', 'temp')
-        obj.writeResultFiles(fullfile(addr, obj.caseID))
+        save(fullfile(folder, obj.caseID + ".mat"), '-struct', 'temp')
+
+        % result files are written during solve() with chunked output and
+        % are only checked here
+        % otherwise the whole run is one chunk
+        solveRange = obj.prcOpts.solveRange;
+        for quantity = obj.storedQuantities()
+            if obj.outputConfig.chunkedOutput
+                obj.checkResultFile(quantity)
+            else
+                frames = obj.outputSubarray(quantity, solveRange(1), solveRange(2));
+                if isempty(frames)
+                    warning("No %s data in memory. Run solve() first.", quantity)
+                    continue
+                end
+                obj.createResultFile(quantity, size(frames, 1:3));
+                obj.writeFrames(quantity, frames, 1);
+            end
+        end
+
+        obj.writeCoordinateMesh()
+        obj.writeDiagnostics()
+        obj.writeLog()
     end
 
     function [optInd, isSafeLine, peakLocsCell] = findOptimalPeakInd(obj, peakInd)
@@ -2116,12 +2181,24 @@ methods (Access = private)
             error("All storage switches are off. Call setStoredOutputs().")
         end
 
+        if obj.outputConfig.chunkedOutput
+            if strlength(obj.outputConfig.saveFolder) == 0
+                error("Chunked output writes the results during solve() and " + ...
+                    "needs a save folder. Call setSaveFolder(folder) first.")
+            end
+            if obj.outputConfig.imageOutput
+                error("Images cannot be stored with chunked output. Call " + ...
+                    "setStoredOutputs(images=false) or disableChunkedOutput().")
+            end
+        end
+
         obj.loopState.stackInd = 0;
         obj.loopState.chunkIndex = 1;
         obj.loopState.isFirstTimestep = true;
         obj.elevData.curr = [];
         obj.phaseData.curr = [];
-        obj.pCorrOpts.warningTimesteps = [];
+        obj.diagnostics.flaggedRegions = struct('timestep', {}, 'rects', {});
+        obj.diagnostics.phaseCorrectionFailures = struct('timestep', {}, 'candidates', {});
 
         rf = obj.prcOpts.resizeFactor;
         rf_o = obj.prcOpts.resizeFactorOutput;
@@ -2146,7 +2223,16 @@ methods (Access = private)
         else
             obj.allocateStacks(Nt)
         end
-        
+
+        % with chunked output the result files are created now and filled
+        % chunk by chunk during the run
+        if obj.outputConfig.chunkedOutput
+            [rowInds, colInds] = obj.outputInds();
+            for quantity = obj.storedQuantities()
+                obj.createResultFile(quantity, [numel(rowInds), numel(colInds), Nt]);
+            end
+        end
+
         % initialize polynomial calibration model
         [Ny, Nx] = size(obj.imgData.refRaw);
         if obj.outputConfig.elevOutput && strcmpi(obj.elevModel.type, 'poly')
@@ -2173,8 +2259,6 @@ methods (Access = private)
             coeffMat = imresize(coeffMat, rf_o, 'bilinear', Antialiasing=false);
             obj.elevModel.poly.coeffMat = coeffMat;
         end
-
-        obj.postData.phaseAnomalies = struct('timestep', {}, 'rects', {});
     end
 
     function allocateStacks(obj, nTimesteps)
@@ -2612,7 +2696,7 @@ methods (Access = private)
     %   Unwraps phaseData.curr row-wise then column-wise inside the
     %   unwrap margin (optionally refining with unwrap2D), detects
     %   residual gradient outliers, records their bounding boxes in
-    %   postData.phaseAnomalies for the current frame, and finally
+    %   diagnostics.flaggedRegions for the current frame, and finally
     %   resizes the phase map to the STACK frame.
 
         if strcmpi(obj.prcOpts.unwrapMethod, 'none')
@@ -2693,7 +2777,7 @@ methods (Access = private)
                     rectArr(any(rectArr(:, 3:4) <= 0, 2),:) = [];
                     
                     if ~isempty(rectArr)
-                        obj.postData.phaseAnomalies(end + 1) = struct( ...
+                        obj.diagnostics.flaggedRegions(end + 1) = struct( ...
                                 'timestep', obj.loopState.timestep, ...
                                 'rects', rectArr);
                     end
@@ -2721,118 +2805,117 @@ methods (Access = private)
 
     function correctPhase(obj)
     % Remove 2*pi ambiguities from the current phase map.
-    %   'temporal': adds the modal 2*pi jump between this frame and the
-    %   previous one, measured at three interior points. 'spatial': uses
-    %   the tracked fringe peak on each correction line to predict the
-    %   true phase there and adds the modal 2*pi offset. Frames where the
-    %   estimate is unreliable are listed in pCorrOpts.warningTimesteps
-    %   and left uncorrected.
+    %   Frames where the estimate is unreliable are listed in 
+    %   diagnostics.phaseCorrectionFailures and left uncorrected.
 
-        if strcmpi(obj.pCorrOpts.method, 'none')
+        switch obj.pCorrOpts.method
+            case "temporal"
+                nJumps = obj.temporalJumpCount();
+            case "spatial"
+                nJumps = obj.spatialJumpCount();
+            otherwise
+                return
+        end
+        obj.phaseData.curr = obj.phaseData.curr + 2*pi*nJumps;
+    end
+
+    function nJumps = temporalJumpCount(obj)
+    % Calculates the 2*pi jumps necessary to correct this frame's phase using the previous frame.
+    %   Counts the whole 2*pi jumps between this frame and the previous one
+    %   at pCorrOpts.numSamples interior points. Returns zero and records
+    %   the frame in diagnostics.phaseCorrectionFailures if no jump count
+    %   is shared by more than half the points. The first frame has no
+    %   predecessor and sets the reference for the rest of the run.
+
+        nJumps = 0;
+        if obj.loopState.isFirstTimestep
             return
         end
- 
-        lineInds = obj.pCorrOpts.lineInds;
- 
-        if ~obj.loopState.isFirstTimestep && strcmpi(obj.pCorrOpts.method, 'temporal')
-            [Ny, Nx] = size(obj.phaseData.curr);
-            i_ind = floor(linspace(1, Ny, 5));
-            i_ind = i_ind(2:4);
-            j_ind = floor(linspace(1, Nx, 5));
-            j_ind = j_ind(2:4);
-            linInd = sub2ind([Ny, Nx], i_ind, j_ind);
- 
-            temporalUnwrap = unwrap([obj.phaseData.prev(linInd); obj.phaseData.curr(linInd)]);
-            phaseDiff = temporalUnwrap(2,:) - obj.phaseData.curr(linInd);
-            tol = 1e-08;
-            phaseDiff = round(phaseDiff/tol)*tol;
-            [temporalJump, F] = mode(phaseDiff);
-            if F == 1
-                obj.pCorrOpts.warningTimesteps(end + 1, :) = [obj.loopState.timestep, temporalJump];
-                temporalJump = 0;
-            end
+        numSamples = obj.pCorrOpts.numSamples;
+        [Ny, Nx] = size(obj.phaseData.curr);
+
+        margin = ceil(obj.prcOpts.unwrapMargin * obj.prcOpts.resizeFactorOutput);
+        % no margin along a dimension too short to have one (1-D data)
+        margin(2) = margin(2) * (Ny > 2*margin(2));
+        margin(1) = margin(1) * (Nx > 2*margin(1));
+
+        rows = floor(linspace(1 + margin(2), Ny - margin(2), numSamples + 2));
+        cols = floor(linspace(1 + margin(1), Nx - margin(1), numSamples + 2));
+        idx = sub2ind([Ny, Nx], rows(2:end - 1), cols(2:end - 1));
+        candidates = round((obj.phaseData.prev(idx) - obj.phaseData.curr(idx)) / (2*pi));
+        [nJumps, frequency] = mode(candidates);
+        if frequency <= numSamples/2
+            obj.recordPhaseCorrectionFailure(candidates);
+            nJumps = 0;
         end
- 
-        if strcmpi(obj.pCorrOpts.method, 'temporal')
-            if obj.loopState.isFirstTimestep
-                return
-            end
+    end
 
-            if temporalJump ~= 0
-                obj.phaseData.curr = obj.phaseData.curr + temporalJump;
-            end
-        else                        % spatial phase correction
-            peaksCurr = obj.pCorrOpts.peaksCurr;
-            peaksRef = obj.pCorrOpts.peaksRef;
-            localPeriod = obj.pCorrOpts.localPeriod;
- 
-            % keep only the lines on which both the reference and the
-            % current peak were detected (failures are marked with NaN)
-            validLine = ~isnan(peaksCurr) & ~isnan(peaksRef) & ~isnan(localPeriod);
- 
-            if ~any(validLine)
-                obj.pCorrOpts.warningTimesteps(end + 1, :) = ...
-                    [obj.loopState.timestep, nan(1, length(lineInds))];
-                return
-            end
+    function nJumps = spatialJumpCount(obj)
+    % Calculates the 2*pi jumps necessary to correct this frame's phase using the tracked fringe peak.
+    %   On each correction line, the shift of the tracked peak from its
+    %   reference position, in local fringe periods, gives the true phase
+    %   difference at the peak's current position. Comparing it with the
+    %   demodulated phase there gives a whole number of 2*pi jumps for that
+    %   line. Returns the count that more than half the lines agree on.
+    %   If no line gives a usable count, or fewer than a majority of the
+    %   lines agree on the jump, the frame is recorded in
+    %   diagnostics.phaseCorrectionFailures and the function returns zero.
+    %   The recorded candidates hold one count per correction line, NaN
+    %   where the line could not be used.
 
-            peaksCurr = peaksCurr(validLine);
-            peaksRef = peaksRef(validLine);
-            localPeriod = localPeriod(validLine);
-            lineIndsUsed = lineInds(validLine);
- 
-            if strcmpi(obj.fringe.normAxis, 'X')
-                targetPoint = obj.RAW2STACK([lineIndsUsed, peaksCurr']);
-            elseif  strcmpi(obj.fringe.normAxis, 'Y')
-                targetPoint = obj.RAW2STACK([peaksCurr', lineIndsUsed]);
-            else
+        nJumps = 0;
+        lineInds = obj.pCorrOpts.lineInds(:);
+        candidates = nan(1, numel(lineInds));
+    
+        peaksCurr   = obj.pCorrOpts.peaksCurr;
+        peaksRef    = obj.pCorrOpts.peaksRef;
+        localPeriod = obj.pCorrOpts.localPeriod;
+    
+        % lines on which the tracked peak was found in both images
+        lines = find(~isnan(peaksCurr) & ~isnan(peaksRef) & ~isnan(localPeriod));
+        if isempty(lines)
+            obj.recordPhaseCorrectionFailure(candidates);
+            return
+        end
+    
+        % position of each peak in the phase map (STACK frame)
+        switch upper(obj.fringe.normAxis)
+            case "X"
+                rowCol = obj.RAW2STACK([lineInds(lines), peaksCurr(lines).']);
+            case "Y"
+                rowCol = obj.RAW2STACK([peaksCurr(lines).', lineInds(lines)]);
+            otherwise
                 error("Pattern normal axis not defined.")
-            end
- 
-            % drop target points that fall outside the computational domain
-            [NyPhase, NxPhase] = size(obj.phaseData.curr);
-            inBounds = ( targetPoint(:, 1) >= 1 & targetPoint(:, 1) <= NyPhase & ...
-                         targetPoint(:, 2) >= 1 & targetPoint(:, 2) <= NxPhase ).';
- 
-            if ~any(inBounds)
-                warning("All phase-correction peaks fall outside the computational " + ...
-                    "domain in image %g; phase correction skipped for this frame.", ...
-                    obj.loopState.timestep)
-                obj.pCorrOpts.warningTimesteps(end + 1, :) = ...
-                    [obj.loopState.timestep, nan(1, length(lineInds))];
-                return
-            end
- 
-            targetPoint = targetPoint(inBounds, :);
-            peaksCurr = peaksCurr(inBounds);
-            peaksRef = peaksRef(inBounds);
-            localPeriod = localPeriod(inBounds);
- 
-            realDeltaPhi = ( peaksRef - peaksCurr ) ...
-                                ./ localPeriod ...
-                                *2*pi;
-            targetInds = sub2ind(size(obj.phaseData.curr), ...
-                                    targetPoint(:, 1), targetPoint(:, 2));
-            calcDeltaPhi = obj.phaseData.curr(targetInds);
-            difference = realDeltaPhi - calcDeltaPhi';
-            correction = 2*pi*round(difference/2/pi);
-            tol = 1e-08;
-            correction = round(correction/tol)*tol;
- 
-            [M, F] = mode(correction);
- 
-            if F == 1 && length(correction) > 2
-                corrRow = nan(1, length(lineInds));
-                usedLines = find(validLine);
-                corrRow(usedLines(inBounds)) = correction;
-                obj.pCorrOpts.warningTimesteps(end + 1, :) = [obj.loopState.timestep, corrRow];
-                correction = 0;
-            else
-                correction = M;
-            end
- 
-            obj.phaseData.curr = obj.phaseData.curr + correction;
         end
+    
+        % keep the peaks that fall inside the phase map
+        [Ny, Nx] = size(obj.phaseData.curr);
+        inside = rowCol(:, 1) >= 1 & rowCol(:, 1) <= Ny & ...
+                 rowCol(:, 2) >= 1 & rowCol(:, 2) <= Nx;
+        lines  = lines(inside);
+        rowCol = rowCol(inside, :);
+    
+        % jumps per line: true phase from the peak shift minus measured phase
+        truePhase = 2*pi * (peaksRef(lines) - peaksCurr(lines)) ./ localPeriod(lines);
+        measuredPhase = obj.phaseData.curr(sub2ind([Ny, Nx], rowCol(:, 1), rowCol(:, 2)));
+        candidates(lines) = round((truePhase(:) - measuredPhase(:)) / (2*pi));
+    
+        counts = candidates(~isnan(candidates));
+        if isempty(counts)
+            obj.recordPhaseCorrectionFailure(candidates);
+            return
+        end
+        [nJumps, frequency] = mode(counts);
+        if frequency <= numel(lineInds)/2
+            obj.recordPhaseCorrectionFailure(candidates);
+            nJumps = 0;
+        end
+    end
+    
+    function recordPhaseCorrectionFailure(obj, candidates)
+    % Add the current frame to diagnostics.phaseCorrectionFailures.
+        obj.diagnostics.phaseCorrectionFailures(end + 1) = struct( ...
+            'timestep', obj.loopState.timestep, 'candidates', candidates);
     end
 
     function calculateElevation(obj)
@@ -2931,6 +3014,7 @@ methods (Access = private)
     end
 
     function storeData(obj)
+    % Store current elevation, phase or image to corresponding stack.
         if obj.outputConfig.phaseOutput
             if obj.loopState.invalidFrame
                 obj.phaseData.stack(:,:,obj.loopState.stackInd) = nan;
@@ -2967,81 +3051,29 @@ methods (Access = private)
         end
     end
 
-    function writeResultFiles(obj, addr)
-        solveRange = obj.prcOpts.solveRange;
-        if obj.outputConfig.chunkedOutput
-            if obj.outputConfig.elevOutput
-                obj.mergeChunkFiles("elevData", ...
-                    fullfile(addr, obj.caseID + "_elevData.bin"));
-            end
-            if obj.outputConfig.phaseOutput
-                obj.mergeChunkFiles("phaseData", ...
-                    fullfile(addr, obj.caseID + "_phaseData.bin"));
-            end
-        else
-            if obj.outputConfig.elevOutput
-                filename = fullfile(addr, obj.caseID + "_elevData.bin");
-
-                outputArr = obj.getElevOutputSubarray(solveRange(1), solveRange(2));
-
-                FtpSolver.writeTimeSeriesBinary(filename, outputArr);
-            end
-
-            if obj.outputConfig.phaseOutput
-                filename = fullfile(addr, obj.caseID + "_phaseData.bin");
-
-                [outputArr, ~, ~] = obj.getPhaseOutputSubarray(solveRange(1), solveRange(2));
-
-                FtpSolver.writeTimeSeriesBinary(filename, outputArr);
-            end
-        end
-    
-        [rowInds, colInds] = obj.outputInds();
-        xMesh = obj.worldCoords.mesh.x(rowInds,colInds);
-        yMesh = obj.worldCoords.mesh.y(rowInds,colInds);
-        
-        temp.xMesh = xMesh;
-        temp.yMesh = yMesh;
-        save(fullfile(addr, "coordinateMesh.mat"), '-struct', 'temp')
-        
-        if obj.outputConfig.chunkedOutput
-            rmdir(obj.caseChunkFolder(), 's')
-        end
-    end
-    
     function writeChunk(obj)
-    % Write the chunk held in memory to the chunk folder.
-    %   Writes the output subarray of the elevation and phase stacks for
-    %   the current chunk to one file each, then reallocates the stacks
-    %   for the next chunk unless this was the last one.
-
-        folder = obj.caseChunkFolder();
-        if ~isfolder(folder)
-            mkdir(folder);
-        end
+    % Write the chunk held in memory into the result files.
+    %   Writes the output subarray of each stored stack into its result
+    %   file at the chunk's frame offset, then reallocates the stacks for
+    %   the next chunk unless this was the last one.
 
         solveRange = obj.prcOpts.solveRange;
         chunkIndex = obj.loopState.chunkIndex;
         chunkLength = obj.outputConfig.chunkLength;
         nTimesteps = diff(solveRange) + 1;
         nChunks = ceil(nTimesteps / chunkLength);
+        firstFrame = (chunkIndex - 1)*chunkLength + 1;     % frame index in the file
 
         if obj.outputConfig.elevOutput
-            chunkFilename = obj.chunkFilePath(chunkIndex, "elevData");
-
-            chunkArr = obj.getElevOutputSubarray(solveRange(1), ...
-                solveRange(1) + size(obj.elevData.stack, 3) - 1);
-
-            FtpSolver.writeTimeSeriesBinary(chunkFilename, chunkArr);
+            nInChunk = size(obj.elevData.stack, 3);
+        else
+            nInChunk = size(obj.phaseData.stack, 3);
         end
 
-        if obj.outputConfig.phaseOutput
-            chunkFilename = obj.chunkFilePath(chunkIndex, "phaseData");
-
-            chunkArr = obj.getPhaseOutputSubarray(solveRange(1), ...
-                solveRange(1) + size(obj.phaseData.stack, 3) - 1);
-
-            FtpSolver.writeTimeSeriesBinary(chunkFilename, chunkArr);
+        for quantity = obj.storedQuantities()
+            frames = obj.outputSubarray(quantity, solveRange(1), ...
+                solveRange(1) + nInChunk - 1);
+            obj.writeFrames(quantity, frames, firstFrame);
         end
 
         if chunkIndex == nChunks
@@ -3057,64 +3089,309 @@ methods (Access = private)
         obj.allocateStacks(nextChunkLength)
     end
 
-    function folder = caseChunkFolder(obj)
-        % Subfolder of chunkFolder holding this case's chunks.
-        folder = fullfile(obj.outputConfig.chunkFolder, "TEMP_chunks_" + obj.caseID);
+    function createResultFile(obj, quantity, dims)
+    % Create an empty result file for one quantity, replacing any old one.
+    %   The dataset is single precision and is not compressed. Attributes
+    %   record the units, the dataset frame index of the file's first
+    %   frame, the number of frames written so far and the dimension order.
+        folder = obj.caseFolder();
+        if ~isfolder(folder)
+            mkdir(folder)
+        end
+        path = obj.resultFilePath(quantity);
+        if isfile(path)
+            delete(path)
+        end
+
+        dataset = "/" + quantity;
+        h5create(path, dataset, dims, 'Datatype', 'single');
+
+        if quantity == "elevation"
+            units = "mm";
+        else
+            units = "rad";
+        end
+        h5writeatt(path, dataset, "units", units);
+        h5writeatt(path, dataset, "firstTimestep", obj.prcOpts.solveRange(1));
+        h5writeatt(path, dataset, "framesWritten", 0);
+        h5writeatt(path, dataset, "dimensionOrder", "MATLAB: [row, column, frame]. " + ...
+            "Row-major readers such as h5py: [frame, column, row].");
     end
 
-    function path = chunkFilePath(obj, k, quantity)
-        % Path of chunk k of one quantity.
-        path = fullfile(obj.caseChunkFolder(), ...
-            sprintf("chunk_%05d_%s.bin", k, quantity));
+    function writeFrames(obj, quantity, frameBlock, firstFrame)
+    % Write a block of frames into a result file and record the progress.
+    %  Writes the N frames in frameBlock to frames firstFrame to
+    %  firstFrame + N - 1 of the result file, which must already exist
+    %  (createResultFile).
+        path = obj.resultFilePath(quantity);
+        dataset = "/" + quantity;
+        h5write(path, dataset, frameBlock, [1 1 firstFrame], size(frameBlock, 1:3));
+        h5writeatt(path, dataset, "framesWritten", firstFrame + size(frameBlock, 3) - 1);
     end
 
-    function mergeChunkFiles(obj, quantity, outFile)
-        % Concatenate the chunk files of one quantity to a single file.
-        %   Checks every chunk file of a chunked run, then writes them in
-        %   chunk order to outFile as one binary in the readBinary format,
-        %   with dimensions [Ny Nx nTimesteps]. Nothing is written if a 
-        %   chunk is missing, has a different frame size, or the chunks do
-        %   not add up to the timesteps in solveRange.
-        %   Inputs:  
-        %       quantity - "elevData" or "phaseData"
-        %       outFile  - path of the merged binary
+    function checkResultFile(obj, quantity)
+    % Warn if a result file is missing or holds fewer frames than solveRange.
+        path = obj.resultFilePath(quantity);
+        if ~isfile(path)
+            warning("Result file %s is missing. Run solve() first.", path)
+            return
+        end
+        nFrames = diff(obj.prcOpts.solveRange) + 1;
+        framesWritten = h5readatt(path, "/" + quantity, "framesWritten");
+        if framesWritten < nFrames
+            warning("%s holds %d of %d frames; the run did not finish.", ...
+                path, framesWritten, nFrames)
+        end
+    end
 
-        nTimesteps = diff(obj.prcOpts.solveRange) + 1;
-        nChunks = ceil(nTimesteps / obj.outputConfig.chunkLength);
+    function quantities = storedQuantities(obj)
+    % Names of the result quantities written to file: "elevation", "phase".
+        quantities = strings(1, 0);
+        if obj.outputConfig.elevOutput
+            quantities(end + 1) = "elevation";
+        end
+        if obj.outputConfig.phaseOutput
+            quantities(end + 1) = "phase";
+        end
+    end
 
-        chunkFiles  = strings(nChunks, 1);
-        chunkTimesteps = zeros(nChunks, 1);
-        for k = 1:nChunks
-            chunkFiles(k) = obj.chunkFilePath(k, quantity);
-            if ~isfile(chunkFiles(k))
-                error("mergeChunkFiles: chunk file %s is missing.", chunkFiles(k))
+    function arr = outputSubarray(obj, quantity, firstTimestep, lastTimestep)
+    % OUTPUT-frame subarray of the elevation or phase stack; [] if not stored.
+        arr = [];
+        if quantity == "elevation" && ~isempty(obj.elevData.stack)
+            arr = obj.getElevOutputSubarray(firstTimestep, lastTimestep);
+        elseif quantity == "phase" && ~isempty(obj.phaseData.stack)
+            arr = obj.getPhaseOutputSubarray(firstTimestep, lastTimestep);
+        end
+    end
+
+    function folder = caseFolder(obj)
+    % Folder that this case's files are written to: <saveFolder>/<caseID>.
+        if strlength(obj.outputConfig.saveFolder) == 0
+            error("No save folder set. Call setSaveFolder(folder) first.")
+        end
+        folder = fullfile(obj.outputConfig.saveFolder, obj.caseID);
+    end
+
+    function path = resultFilePath(obj, quantity)
+    % Path of the result file of one quantity.
+        path = fullfile(obj.caseFolder(), obj.caseID + "_" + quantity + ".h5");
+    end
+
+    function writeCoordinateMesh(obj)
+    % Save the world coordinates (mm) of the result arrays.
+        [rowInds, colInds] = obj.outputInds();
+        xMesh = obj.worldCoords.mesh.x(rowInds, colInds);
+        yMesh = obj.worldCoords.mesh.y(rowInds, colInds);
+        save(fullfile(obj.caseFolder(), "coordinateMesh.mat"), 'xMesh', 'yMesh')
+    end
+
+    function writeDiagnostics(obj)
+    % Save diagnostics to a .mat file.
+        flaggedRegions = obj.diagnostics.flaggedRegions;
+        phaseCorrectionFailures = obj.diagnostics.phaseCorrectionFailures;
+        rectFormat = ['Each row of rects is [x y width height] in pixel ' ...
+            'coordinates of the result arrays (x = column, y = row), in the ' ...
+            'regionprops BoundingBox convention: a box covers columns ' ...
+            'x+0.5 to x+width-0.5 and rows y+0.5 to y+height-0.5. timestep ' ...
+            'is the frame index in the dataset; frame k of the result files ' ...
+            'is timestep firstTimestep + k - 1.'];
+        candidateFormat = ['candidates in phaseCorrectionFailures holds ' ...
+                           'whole-2*pi jump counts, one per sample '...
+                           'point (temporal) or per correction line ' ...
+                           '(spatial, in lineInds order), with NaN ' ...
+                           'where unusable.'];
+        save(fullfile(obj.caseFolder(), obj.caseID + "_diagnostics.mat"), ...
+                            'flaggedRegions', 'rectFormat', ...
+                            'phaseCorrectionFailures', 'candidateFormat')
+    end
+
+    function writeLog(obj)
+    % Write the solver settings and a run summary to <caseID>_log.txt.
+        sections = cell(0, 2);
+
+        % ---- run ----
+        solveRange = obj.prcOpts.solveRange;
+        nFrames = diff(solveRange) + 1;
+        processTime = obj.loopState.processTime;
+        nFlaggedFrames = numel(obj.diagnostics.flaggedRegions);
+        entries = {
+            "First and last frame solved",   solveRange
+            "Number of frames",              nFrames
+            "Processing time (s)",           round(processTime, 1)
+            };
+        if ~isempty(processTime)
+            entries(end + 1, :) = {"Time per frame (s)", ...
+                            round(processTime/nFrames, 3, "significant")};
+        end
+        entries(end + 1, :) = {"Frames with phase correction failures", ...
+            numel(obj.diagnostics.phaseCorrectionFailures)};
+        entries(end + 1, :) = {"Frames with flagged regions", nFlaggedFrames};
+        sections(end + 1, :) = {"Run", entries};
+
+        % ---- input ----
+        entries = {
+            "Reference image",          obj.source.refPath
+            "Data",                     obj.source.dataPath
+            "Data format",              obj.source.dataFormat
+            "Frames available",         obj.source.fullRange
+            "Data camera index",        obj.source.dataCamInd
+            "Reference camera index",   obj.source.refCamInd
+            };
+        sections(end + 1, :) = {"Input", entries};
+
+        % ---- camera calibration ----
+        calib = obj.cameraCalib;
+        entries = {"Type", calib.type};
+        if ~strcmpi(calib.type, "none")
+            entries(end + 1, :) = {"File", calib.path};
+            if endsWith(calib.path, ".xml", 'IgnoreCase', true)
+                entries(end + 1, :) = {"Camera number", calib.camNum};
             end
+        end
+        entries(end + 1, :) = {"Image rotation (deg)", obj.prcOpts.imgRotAngle};
+        entries(end + 1, :) = {"mm per pixel (RAW)", obj.worldCoords.scaling.mmPerPixelOrg};
+        sections(end + 1, :) = {"Camera calibration", entries};
 
-            dims = FtpSolver.readBinaryHeader(chunkFiles(k));
-            if k == 1
-                frameSize = dims(1:end - 1);
-            elseif ~isequal(dims(1:end - 1), frameSize)
-                error("mergeChunkFiles: chunk %d has frame size %s, expected %s.", ...
-                    k, mat2str(dims(1:end - 1)), mat2str(frameSize))
+        % ---- fringe pattern ----
+        entries = {
+            "Period (RAW px)",      obj.fringe.periodOrg
+            "Normal axis",          obj.fringe.normAxis
+            "Tilt angle (deg)",     obj.fringe.tiltAngle
+            };
+        sections(end + 1, :) = {"Fringe pattern", entries};
+
+        % ---- geometry ----
+        entries = {
+            "Computational domain [x y w h] (RAW px)",  obj.prcOpts.cropRectOrg
+            "Output domain [x y w h] (RAW px, relative to computational domain)", ...
+                obj.prcOpts.cropRectOutputOrg
+            "Resize factor",                             obj.prcOpts.resizeFactor
+            "Output resize factor",                      obj.prcOpts.resizeFactorOutput
+            };
+        if isstruct(obj.worldCoords.mesh) && isfield(obj.worldCoords.mesh, 'x')
+            [rowInds, colInds] = obj.outputInds();
+            entries(end + 1, :) = {"Result array size [rows cols]", ...
+                [numel(rowInds), numel(colInds)]};
+        end
+        sections(end + 1, :) = {"Geometry", entries};
+
+        % ---- preprocessing ----
+        nBurnt = nnz(obj.prcOpts.burntPixelMask);
+        entries = {
+            "DC subtraction",                       obj.prcOpts.dcSubtraction
+            "Reference image smoothing",            obj.prcOpts.refImgSmoothing
+            "Discard threshold (mean intensity)",   obj.prcOpts.discardThreshold
+            "Burnt pixels",                         nBurnt
+            };
+        if nBurnt > 0
+            entries(end + 1, :) = {"Burnt pixel fill method", obj.prcOpts.interpBurntPixelMethod};
+        end
+        entries(end + 1, :) = {"Parallax correction", obj.prcOpts.parallaxCorrection};
+        sections(end + 1, :) = {"Preprocessing", entries};
+
+        % ---- demodulation ----
+        demod = obj.demodOpts;
+        entries = {"Method", demod.method};
+        if strcmpi(demod.method, "fourier")
+            entries(end + 1, :) = {"Filter width (fraction of carrier)", demod.filtWidthFrac};
+        else
+            entries = [entries; {
+                "Wavelengths [min max] (RAW px)",   demod.waveletWavelengths
+                "Divisions",                        demod.waveletDivisions
+                "Scales (COMP px)",                 demod.scaleList
+                "Angles (deg)",                     demod.angleList
+                "Morlet sigma",                     demod.sigma
+                "Morlet gamma",                     demod.gamma
+                }];
+        end
+        sections(end + 1, :) = {"Demodulation", entries};
+
+        % ---- unwrapping ----
+        if isempty(obj.prcOpts.unwrapMarginSetting)
+            marginSource = "default (from fringe period)";
+        else
+            marginSource = "set by user";
+        end
+        entries = {
+            "Method",                   obj.prcOpts.unwrapMethod
+            "Margin [x y] (RAW px)",    obj.prcOpts.unwrapMarginOrg
+            "Margin source",            marginSource
+            };
+        sections(end + 1, :) = {"Unwrapping", entries};
+
+        % ---- phase correction ----
+        pCorr = obj.pCorrOpts;
+        entries = {"Method", pCorr.method};
+        if strcmpi(pCorr.method, "spatial")
+            entries = [entries; {
+                "Tracked peak",                                 pCorr.peakInd
+                "Start edge",                                   pCorr.startEdge
+                "Edge safety factor (periods)",                 pCorr.edgeSafetyFactor
+                "Minimum peak height (fraction of median)",     pCorr.peakMinFrac
+                "Minimum peak prominence (fraction of range)",  pCorr.peakPromFrac
+                "Correction lines (RAW px)",                    pCorr.lineInds
+                }];
+        end
+        sections(end + 1, :) = {"Phase correction", entries};
+
+        % ---- elevation model ----
+        model = obj.elevModel;
+        entries = {"Type", model.type};
+        if strcmpi(model.type, "takeda")
+            entries = [entries; {"L (mm)", model.L; "d (mm)", model.d}];
+        elseif strcmpi(model.type, "poly")
+            if isfield(model, 'polyPath')
+                entries(end + 1, :) = {"Calibration file", model.polyPath};
+            else
+                entries(end + 1, :) = {"Calibration file", "none (fitted in this session, not saved)"};
             end
-            chunkTimesteps(k) = dims(end);
+            if model.pixelwise
+                entries(end + 1, :) = {"Coefficients", "pixelwise"};
+            else
+                entries(end + 1, :) = {"Coefficients", "smoothed (poly22 planes)"};
+            end
+            if isfield(model, 'poly') && isfield(model.poly, 'coeffMatOrg')
+                entries(end + 1, :) = {"Polynomial order", size(model.poly.coeffMatOrg, 3) - 1};
+            end
+        end
+        sections(end + 1, :) = {"Elevation model", entries};
+
+        % ---- output ----
+        entries = {
+            "Elevation stored",     obj.outputConfig.elevOutput
+            "Phase stored",         obj.outputConfig.phaseOutput
+            "Chunked output",       obj.outputConfig.chunkedOutput
+            };
+        if obj.outputConfig.chunkedOutput
+            entries(end + 1, :) = {"Chunk length (frames)", obj.outputConfig.chunkLength};
+        end
+        entries(end + 1, :) = {"Save folder", obj.outputConfig.saveFolder};
+        sections(end + 1, :) = {"Output", entries};
+
+        % ---- format, names aligned within each section ----
+        solverFile = string(which("FtpSolver"));
+        solverInfo = dir(solverFile);
+        txt = [
+            "FtpSolver log, case " + obj.caseID
+            "Written:     " + string(datetime("now", "Format", "yyyy-MM-dd HH:mm:ss"))
+            "MATLAB:      " + string(version)
+            "Solver file: " + solverFile + " (modified " ...
+                + string(datetime(solverInfo.datenum, "ConvertFrom", "datenum", ...
+                "Format", "yyyy-MM-dd HH:mm")) + ")"
+            ];
+        for s = 1:size(sections, 1)
+            txt(end + 1) = "";     
+            txt(end + 1) = "[" + sections{s, 1} + "]";
+            entries = sections{s, 2};
+            nameWidth = max(strlength(string(entries(:, 1)))) + 2;
+            for e = 1:size(entries, 1)
+                txt(end + 1) = "  " + pad(entries{e, 1} + ":", nameWidth) ... 
+                    + FtpSolver.logValue(entries{e, 2});
+            end
         end
 
-        if sum(chunkTimesteps) ~= nTimesteps
-            error("mergeChunkFiles: the chunks hold %d frames but solveRange has %d.", ...
-                sum(chunkTimesteps), nTimesteps)
-        end
-
-        outID = fopen(outFile, 'w');
-        if outID < 0
-            error("mergeChunkFiles: cannot open %s for writing.", outFile)
-        end
-        closeOut = onCleanup(@() fclose(outID));
-
-        FtpSolver.writeBinaryHeader(outID, [frameSize, nTimesteps])
-        for k = 1:nChunks
-            fwrite(outID, FtpSolver.readBinary(chunkFiles(k)), 'single');
-        end
+        writelines(txt, fullfile(obj.caseFolder(), obj.caseID + "_log.txt"));
     end
 
     function initImages(obj)
@@ -3135,11 +3412,12 @@ methods (Access = private)
 
     function initPhaseCorrection(obj)      
         cropRectOrg = obj.prcOpts.cropRectOrg;
+        numSamples = obj.pCorrOpts.numSamples;
         if strcmpi(obj.fringe.normAxis, 'Y')
-            targetInds = round(linspace(cropRectOrg(1), cropRectOrg(1) + cropRectOrg(3), 5));
+            targetInds = round(linspace(cropRectOrg(1), cropRectOrg(1) + cropRectOrg(3), numSamples + 2));
             obj.pCorrOpts.lineInds = unique(targetInds(2:end - 1))';
         else                                                    % normal vector to pattern is parallel to X axis
-            targetInds = round(linspace(cropRectOrg(2), cropRectOrg(2) + cropRectOrg(4), 5));
+            targetInds = round(linspace(cropRectOrg(2), cropRectOrg(2) + cropRectOrg(4), numSamples + 2));
             obj.pCorrOpts.lineInds = unique(targetInds(2:end - 1))';
         end
     end
@@ -3406,7 +3684,7 @@ methods (Access = private)
         savedObj.worldCoords.mesh = [];
         savedObj.elevModel = obj.elevModel;
         savedObj.outputConfig = obj.outputConfig;
-        savedObj.postData = obj.postData;
+        savedObj.diagnostics = obj.diagnostics;
         if isfield(savedObj.elevModel, 'poly')
             savedObj.elevModel = rmfield(savedObj.elevModel, 'poly');
         end
@@ -3443,11 +3721,11 @@ methods (Access = private, Static)
         output.method = "temporal";
         output.lineInds = [];
         output.startEdge = "left";
+        output.numSamples = 9;
         output.edgeSafetyFactor = 2.5;
         output.peakInd = [];
         output.peakPromFrac = 1/4;
         output.peakMinFrac = 1/3;
-        output.warningTimesteps = [];
     end
 
     function output = defaultDemodOpts()
@@ -3537,49 +3815,38 @@ methods (Access = private, Static)
         output.reportProgressEnabled = true;
         output.chunkedOutput = false;
         output.chunkLength = 1000;
-        output.chunkFolder = "";
-    end
-     
-    function writeTimeSeriesBinary(path, arr, nSpaceDims)
-        % Write an array whose last dimension is time.
-        %   Creates (or overwrites) the file at path. The header always holds
-        %   nSpaceDims + 1 dimensions.
-        arguments
-            path {mustBeTextScalar}
-            arr
-            nSpaceDims (1,1) double {mustBeInteger, mustBePositive} = 2
-        end
-
-        if ndims(arr) > nSpaceDims + 1
-            error("writeTimeSeriesBinary: array has %d dimensions, but nSpaceDims = %d allows at most %d.", ...
-                ndims(arr), nSpaceDims, nSpaceDims + 1)
-        end
-
-        fID = fopen(path, 'w');
-        if fID < 0
-            error("writeTimeSeriesBinary: cannot open %s for writing.", path)
-        end
-        closeFile = onCleanup(@() fclose(fID));
-
-        FtpSolver.writeBinaryHeader(fID, size(arr, 1:nSpaceDims + 1));
-        fwrite(fID, arr, 'single');
+        output.saveFolder = "";
     end
 
-    function writeBinaryHeader(fID, dims)
-        % Write the dimension header of a result binary.
-        fwrite(fID, numel(dims), 'uint32');
-        fwrite(fID, dims, 'uint32');
+    function output = defaultDiagnostics()
+        output.phaseCorrectionFailures = struct('timestep', {}, 'candidates', {});
+        output.flaggedRegions = struct('timestep', {}, 'rects', {});
     end
 
-    function dims = readBinaryHeader(path)
-        % Dimensions stored in the header of a result binary.
-        fID = fopen(path, 'r');
-        if fID < 0
-            error("readBinaryHeader: cannot open %s.", path)
+    function s = logValue(v)
+        % Format one setting for the log file. Large arrays are summarized.
+        if isempty(v)
+            s = "none";
+        elseif isstring(v) || ischar(v)
+            s = strjoin(string(v), ", ");
+        elseif islogical(v) && isscalar(v)
+            if v
+                s = "yes";
+            else
+                s = "no";
+            end
+        elseif isnumeric(v) || islogical(v)
+            if numel(v) > 100
+                s = "array of size " + mat2str(size(v));
+            else
+                if isvector(v)
+                    v = reshape(v, 1, []);
+                end
+                s = string(mat2str(double(v), 6));
+            end
+        else
+            s = "(" + class(v) + ")";
         end
-        closeIn = onCleanup(@() fclose(fID));
-        nDims = fread(fID, 1, 'uint32');
-        dims  = fread(fID, nDims, 'uint32')';
     end
 
     function delta = quadPeakOffset(fm, f0, fp)
@@ -3745,52 +4012,67 @@ methods(Static)
             newObj.worldCoords = fileObj.worldCoords;             
             newObj.elevModel = fileObj.elevModel;
             newObj.outputConfig = fileObj.outputConfig;
-            newObj.postData = fileObj.postData;
+            newObj.diagnostics = fileObj.diagnostics;
         else
             newObj = fileObj;
         end
     end
 
-    function [data, dataSizeAll] = readBinary(addr, seekTime)
-    % Read back binary data file created by the class.
-    % Inputs:
-    %       addr -      Path to the binary file. 
-    %       seekTime -  (1x2) vector of timesteps to return in the format
-    %                   [firstTimestep lastTimestep]. Reads the full binary
-    %                   if not specified.
-    % Outputs:
-    %       data -          The data array.
-    %       dataSizeAll -   The dimensions of the the full binary array.
-    %
-        if ~exist('addr', 'var')
-            [file, path] = uigetfile('*.bin');
-            addr = fullfile(path, file);
+    function [data, fullSize] = readData(path, firstFrame, lastFrame)
+    % Read elevation or phase frames from a result file written by writeCase.
+    %   data = FtpSolver.readData(path) reads every frame.
+    %   data = FtpSolver.readData(path, firstFrame, lastFrame) reads
+    %   frames firstFrame to lastFrame, counted from 1 at the start of the
+    %   file. The file's firstTimestep attribute gives the dataset frame
+    %   index of frame 1. Called without a path, it asks for the file.
+    %   Outputs:
+    %       data     - [rows x cols x frames] single array
+    %       fullSize - size of the whole array in the file
+        arguments
+            path        {mustBeTextScalar} = ""
+            firstFrame  (1,1) double {mustBeInteger, mustBePositive} = 1
+            lastFrame   double {mustBeScalarOrEmpty, mustBeInteger, mustBePositive} = []
         end
-        fID = fopen(addr, 'rb');
-        closeIn = onCleanup(@() fclose(fID));
 
-        numDim = fread(fID, 1, 'uint32');
-        dataSize = fread(fID, numDim, 'uint32');
-        dataSize = dataSize';
-        dataSizeAll = dataSize;
-
-        if exist('seekTime', 'var')
-            if dataSize(end) < seekTime(2)
-                error("Requested timestep %g exceeds number of timesteps in array (%g).", seekTime(2), dataSize(end))
+        if strlength(path) == 0
+            [file, folder] = uigetfile('*.h5');
+            if isequal(file, 0)
+                data = [];
+                fullSize = [];
+                return
             end
-            dataSize(end) = seekTime(2) - seekTime(1) + 1;
-            % assumes single precision (4 bytes)
-            pageElements = prod(dataSize(1:end - 1));
-            skipLength = 4*pageElements*(seekTime(1) - 1);
-            readElements = pageElements*(seekTime(2) - seekTime(1) + 1);
-            % skip to seekTime(1)
-            fseek(fID, skipLength, 'cof');
-            data = fread(fID, readElements, '*single');
-        else
-            data = fread(fID, '*single');
+            path = fullfile(folder, file);
         end
 
-        data = reshape(data, dataSize);            
+        info = h5info(path);
+        if numel(info.Datasets) ~= 1
+            error("readData: %s is not an FtpSolver result file " + ...
+                "(expected one dataset, found %d).", path, numel(info.Datasets))
+        end
+        dataset = "/" + info.Datasets.Name;
+        fullSize = info.Datasets.Dataspace.Size;
+        fullSize(end + 1:3) = 1;
+
+        if isempty(lastFrame)
+            lastFrame = fullSize(3);
+        end
+        if firstFrame > lastFrame || lastFrame > fullSize(3)
+            error("readData: requested frames %d to %d, but the file " + ...
+                "holds frames 1 to %d.", firstFrame, lastFrame, fullSize(3))
+        end
+
+        % frames after framesWritten were never filled (interrupted run)
+        attrNames = string({info.Datasets.Attributes.Name});
+        if any(attrNames == "framesWritten")
+            framesWritten = h5readatt(path, dataset, "framesWritten");
+            if lastFrame > framesWritten
+                warning("readData: %s holds only %d written frames; " + ...
+                    "later frames read as 0.", path, framesWritten)
+            end
+        end
+
+        data = h5read(path, dataset, [1 1 firstFrame], ...
+            [fullSize(1:2), lastFrame - firstFrame + 1]);
     end
 
     function data = subtractPlane(data, downscaleFactor)
