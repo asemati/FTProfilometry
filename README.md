@@ -22,7 +22,7 @@ recording.
 - **Multiple input formats:** standard image formats (`.png`, `.tiff`, `.bmp`, `.jpg`), plus LaVision DaVis `.set` and `.im7`.
 - **Camera calibration support**: reads pinhole and polynomial calibrations for real-world scaling and de-warping.
 - **Correction of height-induced lateral displacement**: a camera viewing the surface along a slanted ray samples a point that is displaced in-plane whenever the surface sits away from the reference plane. With a pinhole calibration available, calling `setParallaxCorrection(true)` back-projects every pixel to its true world position and resamples the height field onto the nominal mesh, removing that displacement regardless of camera tilt and position.
-- **Automatic outlier detection**: detects abnormally high phase gradients (usually due to debris on the surface) and stores the positions per timestep in `postData.phaseAnomalies`. 
+- **Automatic outlier detection**: detects abnormally high phase gradients (usually due to debris on the surface) and stores the positions per timestep in `diagnostics.flaggedRegions`. 
 - **Analysis and output:** animation of surfaces/phase and export of results.
 
 
@@ -34,7 +34,6 @@ recording.
 - Computer Vision Toolbox
 - Curve Fitting Toolbox
 - Wavelet Toolbox
-- Statistics and Machine Learning Toolbox
 
 ### Third-party dependencies
 
@@ -54,16 +53,17 @@ The `readimx` library must also be added to the MATLAB path if required.
 demoCase = FtpSolver("demoCase", ...              % case ID must be a valid MATLAB variable name
     refPath       = "path/to/reference.tif", ...  % flat reference fringe image
     dataPath      = "path/to/data.tif", ...       % fringe image sequence
-    camCalibPath  = "path/to/cam/calib.mat", ...  % camera calibration path
+    camCalibPath  = "path/to/cam/calib.xml", ...  % camera calibration path
     resizeFactor  = 1, ...                        % rescale factor, between 0 and 1
-    cropRect      = [100 100 1000 600] ...       % computational domain (X, Y, Width, Height)
+    cropRect      = [100 100 1000 600] ...        % computational domain (X, Y, Width, Height)
     );    
 
 demoCase.setSolveRange(1,100);             % set solve range from frame 1 to 100
 demoCase.setElevModelTakeda(cameraHeight, cameraProjectorSeparation);
+demoCase.setSaveFolder("path/to/output");
 demoCase.solve();                     % run the full FTP pipeline over the solve range
 demoCase.animate(1, 100, 10);         % animate timesteps 1–100 at 10 fps
-demoCase.writeCase("path/to/output");
+demoCase.writeCase();
 ```
 ## Typical workflow
 
@@ -104,18 +104,18 @@ known heights (`heightVec`) and **requires the solver to be run at full resoluti
 | `setROI`                              | Interactively define the computational domain.        |
 | `calibrateTakeda` / `calibratePoly`   | Calibrate the phase-to-height model.                  |
 | `setSolveRange`                       | Restrict processing to a sub-range of frames.         |
-| `drawPeaks`                           | Visualize the performance of the spatial phase correction technique.
-| `enableChunkedOutput`                 | Split the computation into chunks and write to temporary files on disk during the run. 
+| `drawPeaks`                           | Visualize the performance of the spatial phase correction technique.|
+| `enableStreaming`                     | Split the computation into chunks and stream to disk during the run.|
 | `solve`                               | Run the full processing pipeline.                     |
 | `animate`                             | Visualize the reconstructed surface / phase.          |
 | `exportVideo`                         | Export a video of the surface / phase.                |
-| `writeCase`                           | Save results to binary and `.mat` files.              |
-| `readBinary`                          | Read surface elevation / phase data `.bin` files.     |
+| `writeCase`                           | Save results to HDF5 and `.mat` files.                |
+| `readData`                            | Read surface elevation / phase data `.h5` files.      |
 
 
 ## Output format
 
-`writeCase` writes results as binary (`*_elevData.bin` and `*_phaseData.bin`) files. Each file stores the number of dimensions and the array size as uint32, and the data as single-precision values. Use the helper function `FtpSolver.readBinary(addr, seekTime)` to read them back into MATLAB. The class object itself, minus the surface and phase data, is written to a `.mat` file. Coordinate arrays are written to a separate `coordinateMesh.mat` file.
+`writeCase` writes results as HDF5 (`*_elevation.h5` and `*_phase.h5`) files. Use the helper function `FtpSolver.readData(path)` to read them back into MATLAB. The class object itself, minus the surface and phase data, is written to a `.mat` file. Coordinate arrays are written to a separate `coordinateMesh.mat` file.
 
 ## Citation
 This implementation is based on the FTP method described in:
