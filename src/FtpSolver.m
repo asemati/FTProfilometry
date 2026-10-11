@@ -145,10 +145,10 @@ methods (Access = public)
 
         obj.fringe.normalAxis = opts.normalAxis;
         if strcmpi(opts.normalAxis, 'X')
-            obj.fringe.normVec = [1, eps];
+            obj.fringe.normalVec = [1, eps];
             obj.phaseCorrOpts.startEdge = "left";
         elseif strcmpi(opts.normalAxis, 'Y')
-            obj.fringe.normVec = [eps, 1];
+            obj.fringe.normalVec = [eps, 1];
             obj.phaseCorrOpts.startEdge = "top";
         end
 
@@ -158,10 +158,10 @@ methods (Access = public)
         % auto-detect the fringe period and pattern axis when none given
         if isnan(opts.period)
             img = imcrop(obj.imgData.refRaw, obj.procOpts.compRectOrg);
-            [period, normalAxis, tiltAngle, normVec] = obj.analyzeFringe(img);
+            [period, normalAxis, tiltAngle, normalVec] = obj.analyzeFringe(img);
             obj.fringe.periodOrg = period;
             obj.fringe.normalAxis = normalAxis;
-            obj.fringe.normVec = normVec;
+            obj.fringe.normalVec = normalVec;
             obj.fringe.tiltAngle = tiltAngle;
             if strcmpi(normalAxis, 'Y')
                 obj.phaseCorrOpts.startEdge = "top";
@@ -930,13 +930,13 @@ end
 %% ----------- Solve, results and saving -----------
 methods (Access = public)
     function solve(obj)
-        % Run the full processing pipeline over solveRange.
-        % Prepares the reference image, then for every frame: load,
-        % preprocess, demodulate, unwrap, phase-correct, convert to
-        % elevation and store. Frames flagged as invalid are stored as NaN.
-        % With streaming on, the result files are created in the save
-        % folder at the start, and solve() writes each buffer to the result
-        % files at its frame offset as soon as it is full.
+    % Run the full processing pipeline over solveRange.
+       % Prepares the reference image, then for every frame: load,
+       % preprocess, demodulate, unwrap, phase-correct, convert to
+       % elevation and store. Frames flagged as invalid are stored as NaN.
+       % With streaming on, the result files are created in the save
+       % folder at the start, and solve() writes each buffer to the result
+       % files as soon as it is full.
 
         t0 = tic();
 
@@ -2139,7 +2139,7 @@ methods (Access = private)
         [kx, ky] = meshgrid(kxv, kyv);
 
         % carrier from the detected fringe properties
-        nVec = obj.fringe.normVec;
+        nVec = obj.fringe.normalVec;
         omega = 2*pi/obj.fringe.period;
         kxG = omega * nVec(1);
         kyG = omega * nVec(2);
@@ -2511,7 +2511,7 @@ methods (Access = private)
         rects(:, 3:4) = rects(:, 3:4) * rf_o;
 
         % clip to the result arrays, whose far edge lies half a pixel beyond
-        % the last pixel centre
+        % the last pixel center
         bottomRight = min(rects(:, 1:2) + rects(:, 3:4), outputRect(3:4) + 1.5);
         rects(:, 1:2) = max(0.5, rects(:, 1:2));
         rects(:, 3:4) = bottomRight - rects(:, 1:2);
@@ -3403,25 +3403,22 @@ methods (Access = private)
         obj.placeCorrectionLines();
 
         % initialize coordinate mesh
-        [ny, nx, ~] = size(obj.imgData.refScaled);
-        [Ny, Nx] = size(obj.imgData.refRaw);
-
         if isfield(obj.worldCoords.mesh, 'xOrg')
-            xComp = FtpSolver.shrinkArr(obj.worldCoords.mesh.xOrg, ...
-                                    rf, 'bilinear', Antialiasing=false);
-            yComp = FtpSolver.shrinkArr(obj.worldCoords.mesh.yOrg, ...
-                                    rf, 'bilinear', Antialiasing=false);
-
+            xOrg = obj.worldCoords.mesh.xOrg;
+            yOrg = obj.worldCoords.mesh.yOrg;
         else
+            [Ny, Nx] = size(obj.imgData.refRaw);
             x0 = obj.worldCoords.scaling.X.Offset;
-            xSlope = obj.worldCoords.scaling.X.Slope;
             y0 = obj.worldCoords.scaling.Y.Offset;
-            ySlope = obj.worldCoords.scaling.Y.Slope;
+            xSlopeOrg = obj.worldCoords.scaling.X.SlopeOrg;
+            ySlopeOrg = obj.worldCoords.scaling.Y.SlopeOrg;
 
-            [xComp, yComp] = meshgrid(x0 + xSlope*(0:nx-1), ...
-                                        y0 + ySlope*(0:ny-1));
+            [xOrg, yOrg] = meshgrid(x0 + xSlopeOrg*(0:Nx-1), ...
+                                    y0 + ySlopeOrg*(0:Ny-1));
         end
-
+        
+        xComp = FtpSolver.shrinkArr(xOrg, rf, 'bilinear', Antialiasing=false);
+        yComp = FtpSolver.shrinkArr(yOrg, rf, 'bilinear', Antialiasing=false);
         xComp = imcrop(xComp, obj.procOpts.compRect);
         yComp = imcrop(yComp, obj.procOpts.compRect);
 
@@ -4053,7 +4050,7 @@ methods (Access = private)
         textFontSize = 14;
     
         % pixel-edge boundary [left top right bottom] of the computational
-        % domain, whose pixel centres run from x0 to x0 + w
+        % domain, whose pixel centers run from x0 to x0 + w
         outer = [compRectOrg(1:2) - 0.5, compRectOrg(1:2) + compRectOrg(3:4) + 0.5];
     
         % margin in RAW pixels; none along an axis too short to hold it
@@ -4134,7 +4131,7 @@ methods (Access = private, Static)
     end
 
     function output = defaultFringe()
-        output.normVec = [];
+        output.normalVec = [];
         output.normalAxis = "";
         output.periodOrg = [];
         output.period = [];
@@ -4468,7 +4465,7 @@ methods (Static)
         end
     end
 
-    function [period, normalAxis, tiltAngle, normVec] = analyzeFringe(img)
+    function [period, normalAxis, tiltAngle, normalVec] = analyzeFringe(img)
     % Estimate fringe period and orientation via FFT
     %
     %   Applies a Hann window to the image and locates the dominant
@@ -4484,7 +4481,7 @@ methods (Static)
     %                 the perpendicular axis. Positive when the normal is
     %                 rotated from the selected positive axis toward the
     %                 other positive axis.
-    %   normVec     - fringe normal unit vector [vx, vy]
+    %   normalVec   - fringe normal unit vector [vx, vy]
     %
         img = double(img);
         [ny, nx] = size(img);
@@ -4543,7 +4540,7 @@ methods (Static)
             end
             tiltAngle = atand(fx/fy);
         end
-        normVec = [fx, fy]/norm([fx, fy]);
+        normalVec = [fx, fy]/norm([fx, fy]);
     end
 
     function W4D = morletCWT(img, scales, anglesDeg, sigma, gamma, fringeNormalAxis)
@@ -4605,8 +4602,8 @@ methods (Static)
                 angles  = deg2rad(anglesDeg), ...
                 norm    = "L1");
 
-            % cfs is [rows x cols x 1 x nScales x nAngles]; drop the
-            % singleton plane dimension and crop the padding.
+            % cfs is [rows x cols x 1 x nScales x nAngles]
+            % drop the singleton plane dimension and crop the padding.
             W4D = permute(cwtOut.cfs, [1 2 4 5 3]);
             W4D = W4D(padSize+1:end-padSize, padSize+1:end-padSize, :, :);
         end
