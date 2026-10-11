@@ -1,0 +1,10 @@
+# MATLAB Drive sync markers
+.MATLABDriveTag
+
+# MATLAB editor autosaves
+*.asv
+*.m~
+
+# Operating system clutter
+Thumbs.db
+.DS_Store

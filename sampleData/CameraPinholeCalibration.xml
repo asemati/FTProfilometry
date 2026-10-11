@@ -1,0 +1,39 @@
+<?xml version="1.0"?>
+<Calibration Version="2" CalibrationIdentifier="250502_203038" SourceSetPath="E:/Paper 1/20240602_profilometryExperiments_calibration" SourceSetDateTime="6/3/24 6:47 PM">
+	<CoordinateSystemsForEachView CoordinateSystemIdentifier="0">
+		<CoordinateSystem FieldOfView="SameForAllCameras">
+			<CoordinateMapper CameraIdentifier="2" Type="PinholeOpenCV" GroupId="1">
+				<PinholeParameters Bundled="false">
+					<CommonParameters>
+						<FitError RMS="0.26244320667175919" />
+						<CoordinateSystemOrientation Value="RightHanded" />
+						<CorrectedImageSize Width="2643" Height="2359" />
+						<RegionWithinCorrectedImage x="0" y="0" Width="2643" Height="2359" />
+						<OriginalImageSize Width="2640" Height="2304" />
+						<PixelPerMmFactor Value="10.983904218597319" />
+					</CommonParameters>
+					<InternalCameraParameters>
+						<SensorPixelSizeMm Value="0.0027400000000000002" />
+						<FocalLengthPixel x="27.940304615335002" y="27.940304615335002" />
+						<OriginPixelPosition x="1318.4126466821485" y="1188.6983950148287" />
+						<RadialDistortion radialDistortionCoefficient1="0.030275024694743507" radialDistortionCoefficient2="-0.58116925460729463" />
+						<TangentialDistortion tangentialDistortionCoefficient1="0.00040697783818680815" tangentialDistortionCoefficient2="0.0011710574967031737" />
+						<PrincipalPoint x="1384.0846957613066" y="1277.4963543769775" />
+					</InternalCameraParameters>
+					<ExternalCameraParameters>
+						<TranslationMm Tx="-6.1173651969813037" Ty="-11.349539316932406" Tz="928.06823913624794" />
+						<RotationAngles Rx="2.9483993963920883" Ry="-0.0053400517863371215" Rz="-0.0025224308676389797" />
+					</ExternalCameraParameters>
+					<Version Value="2" />
+					<Scales>
+						<LinearScaleX FactorMmPerPixel="0.091042308827389187" OffsetMm="-120.03133134117171" Unit="mm" Description="x" />
+						<LinearScaleY FactorMmPerPixel="-0.091042308827389187" OffsetMm="108.2218463815619" Unit="mm" Description="y" />
+						<LinearScaleZ FactorMmPerPixel="0.091042308827389187" OffsetMm="0" Unit="mm" Description="z" />
+						<LinearScaleI FactorMmPerPixel="1" OffsetMm="0" Unit="count" Description="intensity" />
+					</Scales>
+					<Transformations ChipSizeWidth="5328" ChipSizeHeight="4608" AoiOriginX="0" AoiOriginY="0" BinningX="2" BinningY="2" FrameRotation="0" />
+				</PinholeParameters>
+			</CoordinateMapper>
+		</CoordinateSystem>
+	</CoordinateSystemsForEachView>
+</Calibration>

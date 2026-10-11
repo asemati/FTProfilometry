@@ -83,7 +83,7 @@ H = K*(R2*R1' - (R1*R2'*t2 - t1)*n_c'/d)*inv(K);
 H = H./H(3,3);  % normalize
 
 % determine optimum image resolution
-% dewarped image should be large enough so that downscaling does not occur,
+% dewarped image should be large enough so that downsampling does not occur,
 % but no larger
 
 % corner points, starting from top left and moving counter-clockwise

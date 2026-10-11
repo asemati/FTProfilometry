@@ -17,7 +17,7 @@ recording.
 ## Features
 - **Two demodulation methods:** standard Fourier-transform demodulation and
   continuous wavelet demodulation.
-- **Two phase-to-height calibration models:** Takeda's model (`takeda`) and a pixel-wise polynomial fit (`poly`).
+- **Two phase-to-height calibration models:** Takeda's model (`takeda`) and a pixel-wise polynomial fit (`polynomial`).
 - **Two phase-correction strategies:** spatial and temporal, for handling uncertainty in the absolute phase. 
 - **Multiple input formats:** standard image formats (`.png`, `.tiff`, `.bmp`, `.jpg`), plus LaVision DaVis `.set` and `.im7`.
 - **Camera calibration support**: reads pinhole and polynomial calibrations for real-world scaling and de-warping.
@@ -55,7 +55,7 @@ demoCase = FtpSolver("demoCase", ...              % case ID must be a valid MATL
     dataPath      = "path/to/data.tif", ...       % fringe image sequence
     camCalibPath  = "path/to/cam/calib.xml", ...  % camera calibration path
     resizeFactor  = 1, ...                        % rescale factor, between 0 and 1
-    cropRect      = [100 100 1000 600] ...        % computational domain (X, Y, Width, Height)
+    compRect      = [100 100 1000 600] ...        % computational domain (X, Y, Width, Height)
     );    
 
 demoCase.setSolveRange(1,100);             % set solve range from frame 1 to 100
@@ -69,11 +69,11 @@ demoCase.writeCase();
 
 1. **Construct** the solver with a reference image, a data sequence, and geometry/scaling
    parameters.
-2. **Define the ROI** with `setROI()` to restrict processing to the region of interest.
+2. **Define the computational domain** with `drawCompDomain()` to restrict processing to the region of interest.
 3. **(Optional) Calibrate** the phase-to-height model.
 4. **Solve** with `solve()` to demodulate, unwrap, phase-correct, and convert to height
    for every frame.
-5. **Inspect and export** using `animate()`, and `writeCase()`.
+5. **Inspect and export** using `animate()` and `writeCase()`.
 
 ## Resolution
 
@@ -82,30 +82,29 @@ before they are demodulated and so governs the cost of the computation, while
 `resizeFactorOutput` (default `0.5`) rescales the unwrapped phase before it is stored
 and so governs the size of everything that comes out of a run: the surface and phase
 stacks and the coordinate meshes. A 1000×600 computational
-domain therefore produces 500×300 output arrays at the default setting. Set `resizeFactorOutput = 1` to keep the full grid.
+domain therefore produces 500×300 output arrays at the default setting. Call `setGeometry(resizeFactorOutput=1)` to keep the full grid.
 
 ## Calibration
 
 The phase-to-height conversion uses one of two models:
 
-| Model     | Method                              | Set up via                          |
-|-----------|-------------------------------------|-------------------------------------|
-| `takeda`  | Analytical                          | `demoCase.setElevModelTakeda(L, d)`          |
-| `poly`    | Pixel-wise polynomial fit           | `demoCase.setElevModelPoly(addr)` |
+| Model         | Method                              | Set up via                          |
+|---------------|-------------------------------------|-------------------------------------|
+| `takeda`      | Analytical                          | `demoCase.setElevModelTakeda(L, d)`          |
+| `polynomial`  | Pixel-wise polynomial fit           | `demoCase.setElevModelPoly(filepath)` |
 
-The `poly` calibration is built from a stack of reference planes at
-known heights (`heightVec`) and **requires the solver to be run at full resolution**
-(`resizeFactor = 1`, `resizeFactorOutput = 1`). Run `calibModeOn()` before `solve()` to set these parameters automatically. Calibration coefficients can be saved and reloaded with `writePolyCalibration` / `setElevModelPoly`.
+The calibration is built from a stack of reference planes at known heights (`heightVec`) and **requires the solver to be run at full resolution**
+(`resizeFactor = 1`, `resizeFactorOutput = 1`). Run `prepForCalibration()` before `solve()` to set these parameters automatically. Calibration coefficients can be saved and loaded with `writePolyCalibration()` and `setElevModelPoly()`.
 
 ## Key methods
 
 | Method                                | Purpose                                             |
 |---------------------------------------|-----------------------------------------------------|
-| `setROI`                              | Interactively define the computational domain.        |
+| `drawCompDomain`                      | Interactively define the computational domain.        |
 | `calibrateTakeda` / `calibratePoly`   | Calibrate the phase-to-height model.                  |
 | `setSolveRange`                       | Restrict processing to a sub-range of frames.         |
-| `drawPeaks`                           | Visualize the performance of the spatial phase correction technique.|
-| `enableStreaming`                     | Split the computation into chunks and stream to disk during the run.|
+| `showTrackedPeaks`                    | Visualize the performance of the spatial phase correction technique.|
+| `enableStreaming`                     | Keep at most `bufferLength` frames in memory and stream the results to disk during the run.|
 | `solve`                               | Run the full processing pipeline.                     |
 | `animate`                             | Visualize the reconstructed surface / phase.          |
 | `exportVideo`                         | Export a video of the surface / phase.                |
@@ -115,7 +114,7 @@ known heights (`heightVec`) and **requires the solver to be run at full resoluti
 
 ## Output format
 
-`writeCase` writes results as HDF5 (`*_elevation.h5` and `*_phase.h5`) files. Use the helper function `FtpSolver.readData(path)` to read them back into MATLAB. The class object itself, minus the surface and phase data, is written to a `.mat` file. Coordinate arrays are written to a separate `coordinateMesh.mat` file.
+`writeCase()` writes results as HDF5 (`*_elevation.h5` and `*_phase.h5`) files. Use the helper function `FtpSolver.readData(filepath)` to read them back into MATLAB. The class object itself, minus the surface and phase data, is written to a `.mat` file. Coordinate arrays are written to a separate `coordinateMesh.mat` file and a log file is produced which contains the settings used by the solver.
 
 ## Citation
 This implementation is based on the FTP method described in:
