@@ -152,7 +152,7 @@ function calibStruct = readDavisPinholeCalibration(cMap)
 end
 
 function calibCell = readDavisPolyCalibration(cMap)
-%   Extracts polynomial coefficients from Davis polynomial calibration struct. 
+% Extracts polynomial coefficients from Davis polynomial calibration struct. 
     if isfield(cMap.Attributes, 'CameraIdentifier')
         camNum = str2double(cMap.Attributes.CameraIdentifier);
     else
