@@ -3402,12 +3402,12 @@ methods (Access = private)
 
         obj.placeCorrectionLines();
 
+        [Ny, Nx] = size(obj.imgData.refRaw);
         % initialize coordinate mesh
         if isfield(obj.worldCoords.mesh, 'xOrg')
             xOrg = obj.worldCoords.mesh.xOrg;
             yOrg = obj.worldCoords.mesh.yOrg;
         else
-            [Ny, Nx] = size(obj.imgData.refRaw);
             x0 = obj.worldCoords.scaling.X.Offset;
             y0 = obj.worldCoords.scaling.Y.Offset;
             xSlopeOrg = obj.worldCoords.scaling.X.SlopeOrg;
