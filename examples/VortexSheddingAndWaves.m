@@ -26,7 +26,6 @@
 % addpath(genpath("path/to/FTProfilometry")).
 
 workDir = "path/to/workingDirectory";     % folder containing the .nc file
-workDir = "D:/test";     % folder containing the .nc file
 
 % Locate the repository from the solver itself, so that the files in
 % sampleData are found wherever the repository was cloned.
