@@ -22,7 +22,7 @@
 % The zip file holds the calibration images and the heights of the planes
 % as NetCDF, together with the camera calibration .xml file.
 
-workDir       = "path/to/workingDirectory";
+workDir       = "path/to/workingDirectory"; % folder containing the .nc and .xml files
 ncFile        = fullfile(workDir, "imageSet_ProfCalibration.nc");
 camCalibFile  = fullfile(workDir, "CameraPinholeCalibration.xml");
 imageFolder   = fullfile(workDir, "calibImageSet");
