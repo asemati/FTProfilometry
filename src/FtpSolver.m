@@ -610,8 +610,8 @@ methods (Access = public)
 
     function setPolyPixelwise(obj, state)
     % Choose pixelwise or smoothed polynomial coefficients.
-    %   In:  state - true for the raw pixelwise fit, false for the poly22
-    %                smoothed coefficient planes
+    %   Input: state - true for the raw pixelwise fit, false for the
+    %                  second-order surfaces fitted to the coefficient planes
 
         if strcmpi(obj.elevModel.type, 'polynomial') && isfield(obj.elevModel, 'poly')
             obj.elevModel.poly.pixelwise = logical(state);
@@ -817,9 +817,9 @@ methods (Access = public)
     %   absolute error of each plane when pixelwise coefficients are used.
     %
     %   Stores in obj.elevModel.poly:
-    %       coeffMatOrg  - pixelwise coefficients, RAW frame, NaN-padded
-    %       fittedSurfs  - poly22 fits of each coefficient over the region
-
+    %       coeffMatOrg     - pixelwise coefficients, RAW frame, NaN-padded
+    %       surfaceCoeffs   - 6 x nPlanes array of second-order surface
+    %                         coefficients for each plane of coeffMatOrg
         arguments
             obj
             polyOrder (1,1) double = 2
@@ -868,15 +868,9 @@ methods (Access = public)
         coeffMatOrg(geom.embedRows, geom.embedCols, :) = coeffMat;
 
         % Smooth (poly22) coefficients
-        fittedSurfs = cell(1, size(coeffMat, 3));
-        smoothCoeffCrop = zeros(size(coeffMat));
-        for i = 1:size(coeffMat, 3)
-            [xData, yData, zData] = prepareSurfaceData( ...
-                geom.pMeshX_crop, geom.pMeshY_crop, coeffMat(:,:,i));
-            fittedSurfs{i} = fit([xData, yData], zData, fittype('poly22'));
-            smoothCoeffCrop(:,:,i) = fittedSurfs{i}(geom.pMeshX_crop, ...
-                                                        geom.pMeshY_crop);
-        end
+        surfaceCoeffs   = FtpSolver.fitCoeffSurfaces(coeffMatOrg);
+        smoothCoeffCrop = FtpSolver.evalCoeffSurfaces(surfaceCoeffs, ...
+            geom.pMeshX_crop, geom.pMeshY_crop);
 
         % Diagnostics
         elevCropSmooth = FtpSolver.evalPolyElev(phaseCrop, smoothCoeffCrop);
@@ -909,7 +903,7 @@ methods (Access = public)
         % Store the model
         obj.elevModel.type = 'polynomial';
         obj.elevModel.poly.coeffMatOrg  = coeffMatOrg;
-        obj.elevModel.poly.fittedSurfs = fittedSurfs;
+        obj.elevModel.poly.surfaceCoeffs = surfaceCoeffs;
         obj.elevModel.poly.pixelwise = true;
     end
 
@@ -917,11 +911,11 @@ methods (Access = public)
     % Save the polynomial calibration to a .mat file.
     %   The resized working copy (coeffMat) is dropped; only the RAW-frame
     %   coefficients and the fitted surfaces are written.
-    %   In:  path - output .mat file path
+    %   Input:  path - write path of .mat calibration file
 
         temp = struct;
         temp.coeffMatOrg = obj.elevModel.poly.coeffMatOrg;
-        temp.fittedSurfs = obj.elevModel.poly.fittedSurfs;
+        temp.surfaceCoeffs = obj.elevModel.poly.surfaceCoeffs;
         save(path, '-struct', 'temp')
         obj.elevModel.path = FtpSolver.absolutePath(path);
     end
@@ -1044,7 +1038,6 @@ methods (Access = public)
         if isfield(savedObj.elevModel, 'poly')
             savedObj.elevModel.poly.coeffMatOrg = [];
             savedObj.elevModel.poly.coeffMat    = [];
-            savedObj.elevModel.poly.fittedSurfs = [];
         end
     end
 
@@ -1302,7 +1295,8 @@ end
 methods (Access = public)
     function showDomains(obj)
     % Draw the domain rectangles on the reference image.
-        figure("WindowStyle","normal");
+        figure("WindowStyle","normal", 'Units', 'normalized', ...
+               'Position', [0.1 0.1 0.5 0.6]);
         imHndl = imshow(obj.imgData.refRaw, []);
         obj.overlayDomainRectangles(imHndl.Parent)
     end
@@ -1783,7 +1777,8 @@ methods (Access = public)
             lastTimestep (1,1) double = obj.procOpts.solveRange(2)
             framerate (1,1) double = 5
         end
-        figHndl = figure(120);
+        figHndl = figure();
+        axHndl = axes(figHndl);
 
         pauseTime = 1/framerate;
 
@@ -1794,7 +1789,7 @@ methods (Access = public)
         maxThresh = 1.1*edges(find(values > 0.999, 1, 'first'));
         minThresh = edges(find(values > 0.001, 1, 'first'));
 
-        imHndl = imshow(obj.imgData.curr, [minThresh maxThresh]);
+        imHndl = imshow(obj.imgData.curr, [minThresh maxThresh], 'Parent', axHndl);
         title(num2str(firstTimestep))
         pause(pauseTime)
 
@@ -1807,7 +1802,7 @@ methods (Access = public)
             obj.preprocessCurrentImage();
 
             set(imHndl, 'CData', obj.imgData.curr)
-            title(num2str(timestep))
+            title(axHndl, num2str(timestep))
             pause(pauseTime)
         end
     end
@@ -1822,6 +1817,7 @@ methods (Access = public)
             opts.showDomains (1,1) logical = true
         end
         figHndl = figure();
+        axHndl = axes(figHndl);
 
         pauseTime = 1/framerate;
 
@@ -1839,7 +1835,7 @@ methods (Access = public)
             img = obj.rectify(img);
 
             if timestep == firstTimestep
-                imHndl = imshow(img, [0 maxThresh]);
+                imHndl = imshow(img, [0 maxThresh], 'Parent', axHndl);
                 if opts.showDomains
                     obj.overlayDomainRectangles(imHndl.Parent)
                 end
@@ -1847,7 +1843,7 @@ methods (Access = public)
                 set(imHndl, 'CData', img)
             end
 
-            title(num2str(timestep))
+            title(axHndl, num2str(timestep))
             pause(pauseTime)
         end
     end
@@ -1935,18 +1931,14 @@ methods (Access = private)
         [Ny, Nx] = size(obj.imgData.refRaw);
         if obj.outputConfig.elevStorage && strcmpi(obj.elevModel.type, 'polynomial')
             if obj.elevModel.poly.pixelwise
-                coeffMat = FtpSolver.shrinkArr(obj.elevModel.poly.coeffMatOrg, ...
-                    rf, 'bilinear', Antialiasing=false);
+                coeffSrc = obj.elevModel.poly.coeffMatOrg;
             else
                 [xMesh, yMesh] = meshgrid(1:Nx, 1:Ny);
-                fSurfs = obj.elevModel.poly.fittedSurfs;
-                coeffMat = zeros([FtpSolver.shrunkArrSize([Ny, Nx], rf), length(fSurfs)]);
-                for i = 1:length(fSurfs)
-                    coeffVals = fSurfs{i}(xMesh, yMesh);
-                    coeffMat(:,:,i) = FtpSolver.shrinkArr(coeffVals, ...
-                        rf, 'bilinear', Antialiasing=false);
-                end
+                coeffSrc = FtpSolver.evalCoeffSurfaces( ...
+                    obj.elevModel.poly.surfaceCoeffs, xMesh, yMesh);
             end
+            coeffMat = FtpSolver.shrinkArr(coeffSrc, rf, 'bilinear', Antialiasing=false);
+
 
             compRect3 = [obj.procOpts.compRect(1:2), 1, ...
                 obj.procOpts.compRect(3:4), ...
@@ -4234,26 +4226,26 @@ methods (Access = private, Static)
     end
 
     function output = defaultDiagnostics()
-        output.phaseCorrectionFailures = struct('timestep', {}, 'candidates', {});
+    output.phaseCorrectionFailures = struct('timestep', {}, 'candidates', {});
         output.flaggedRegions = struct('timestep', {}, 'rects', {});
         output.solveTime = [];
     end
 
     function out = rescaleCoord(x, scale)
-        % Map a coordinate between frames related by imresize.
+    % Map a coordinate between frames related by imresize.
         % scale about the image edge
         out = (x - 0.5)*scale + 0.5;
     end
 
     function out = shrinkArr(A, scale, varargin)
-        % Shrink an array with imresize, dropping output pixels that lie outside it.
+    % Shrink an array with imresize, dropping output pixels that lie outside it.
         out = imresize(A, scale, varargin{:});
         n = FtpSolver.shrunkArrSize(size(A, [1 2]), scale);
         out = out(1:n(1), 1:n(2), :);
     end
 
     function n = shrunkArrSize(sz, scale)
-        % Rows and columns returned by shrinkArr for an array of size sz.
+    % Rows and columns returned by shrinkArr for an array of size sz.
         n = max(1, floor(scale*sz + (1 - scale)/2 + 1e-9));
     end
 
@@ -4272,8 +4264,8 @@ methods (Access = private, Static)
     end
 
     function len = faultLength(faults)
-        % Approximate total length, in pixels, of the faults in a mask: a
-        % 2*pi fault marks a line two pixels wide.
+    % Approximate total length, in pixels, of the faults in a mask.
+        % a 2*pi fault marks a line two pixels wide.
         len = nnz(faults) / 2;
     end
 
@@ -4293,7 +4285,7 @@ methods (Access = private, Static)
     end
 
     function [minHeight, minProm] = peakThresholds(lineVals, peakMinFrac, peakPromFrac)
-        % Fringe mean level and peak-to-trough amplitude from the intensity distribution.
+    % Fringe mean level and peak-to-trough amplitude from the intensity distribution.
         medianLevel = median(lineVals, 'omitmissing');
         amplitude = prctile(lineVals, 95) - prctile(lineVals, 5);
         minHeight = peakMinFrac  * medianLevel;
@@ -4391,7 +4383,7 @@ methods (Access = private, Static)
     end
 
     function p = absolutePath(p)
-        % Full path of an existing file, resolving relative paths and "..".
+    % Full path of an existing file, resolving relative paths and "..".
         info = dir(p);
         if numel(info) ~= 1 || info.isdir
             error("File not found: %s", p)
@@ -4400,7 +4392,7 @@ methods (Access = private, Static)
     end
 
     function s = logValue(v)
-        % Format one setting for the log file. Large arrays are summarized.
+    % Format one setting for the log file. Large arrays are summarized.
         if isempty(v)
             s = "none";
         elseif isstring(v) || ischar(v)
@@ -4423,6 +4415,47 @@ methods (Access = private, Static)
         else
             s = "(" + class(v) + ")";
         end
+    end
+
+    function surfaceCoeffs = fitCoeffSurfaces(coeffMatOrg)
+    % Fit a second-order surface to each pixelwise coefficient plane.
+        % Each plane is fitted by least squares over its finite
+        % (calibrated) pixels with 
+        %       c = p00 + p10*x + p01*y + p20*x^2 + p11*x*y + p02*y^2, 
+        % where x and y are the RAW pixel column and row indices. 
+        % Input:
+        %   coeffMatOrg   - pixelwise coefficients, RAW frame, NaN outside
+        %                   the calibrated region
+        % Output:
+        % surfaceCoeffs - 6 x nPlanes; column i holds
+        %                 [p00; p10; p01; p20; p11; p02] of plane i
+        [Ny, Nx, nPlanes] = size(coeffMatOrg);
+        [xMesh, yMesh] = meshgrid(1:Nx, 1:Ny);
+        surfaceCoeffs = zeros(6, nPlanes);
+        for i = 1:nPlanes
+            c = coeffMatOrg(:,:,i);
+            valid = isfinite(c);
+            A = FtpSolver.quadBasis(xMesh(valid), yMesh(valid));
+            % scale each column to unit length
+            colNorms = vecnorm(A);
+            surfaceCoeffs(:, i) = ((A ./ colNorms) \ c(valid)) ./ colNorms';
+        end
+    end
+
+    function coeffPlanes = evalCoeffSurfaces(surfaceCoeffs, xMesh, yMesh)
+    % Evaluate the fitted coefficient surfaces at RAW pixel coordinates.
+        %   Inputs:
+        %       surfaceCoeffs - 6 x nPlanes, from fitCoeffSurfaces
+        %       xMesh, yMesh  - RAW pixel column and row indices
+        %   Output: 
+        %       coeffPlanes   - size(xMesh) x nPlanes
+        coeffPlanes = reshape(FtpSolver.quadBasis(xMesh(:), yMesh(:)) * surfaceCoeffs, ...
+                              [size(xMesh), size(surfaceCoeffs, 2)]);
+    end
+
+    function A = quadBasis(x, y)
+    % Terms of the second-order surface, one column each: 1, x, y, x^2, x*y, y^2.
+        A = [ones(size(x)), x, y, x.^2, x.*y, y.^2];
     end
 end
 

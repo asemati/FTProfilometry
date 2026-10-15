@@ -284,12 +284,13 @@ xlabel("Height (mm)")
 ylabel("Mean absolute error (mm)")
 set(gca, 'fontsize', 15)
 
-% writePolyCalibration saves both pixelwise coefficients and the surfaces
-% fitted to those coefficients to a .mat file. The file is loaded into an
-% FtpSolver object with setElevModelPoly(filePath). It stays valid only for
-% the same camera calibration, rectified image size, and projected fringe
-% period. The Takeda model, however, is only affected by the optical setup
-% and is valid as long as this setup is unchanged.
+% writePolyCalibration saves both pixelwise coefficients and the six
+% coefficients of the second-order surface fitted to each coefficient plane
+% to a .mat file. The file is loaded into an FtpSolver object with
+% setElevModelPoly(filePath). It stays valid only for the same camera
+% calibration, rectified image size, and projected fringe period. The
+% Takeda model, however, is only affected by the optical setup and is valid
+% as long as this setup is unchanged.
 calibCase.writePolyCalibration(polyCalibFile);
 
 %% 11. Inspecting the polynomial calibration

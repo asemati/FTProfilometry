@@ -26,6 +26,7 @@
 % addpath(genpath("path/to/FTProfilometry")).
 
 workDir = "path/to/workingDirectory";     % folder containing the .nc file
+workDir = "D:/test";     % folder containing the .nc file
 
 % Locate the repository from the solver itself, so that the files in
 % sampleData are found wherever the repository was cloned.
@@ -254,7 +255,7 @@ fy = ((0:ny-1) - floor(ny/2))/ny;
 refSpectrum = abs(fftshift(fft2(refImg .* (hannWindow(ny) * hannWindow(nx)'))));   % Hann window limits spectral leakage
 frameSpectrum = abs(fftshift(fft2(img .* (hannWindow(ny) * hannWindow(nx)'))));
 
-figure
+figure('Units', 'normalized', 'Position', [0.2 0.2 0.7 0.55])
 tiledlayout(1,2)
 nexttile
 
@@ -338,7 +339,7 @@ fprintf("Fourier: %.2f s per frame, wavelet: %.2f s per frame\n", ...
 k = testFrame - testRange(1) + 1;
 phaseDiff = phaseWavelet(:,:,k) - phaseFourier(:,:,k);
 
-figure
+figure('Units', 'normalized', 'Position', [0.1 0.45 0.82 0.37])
 tiledlayout(1, 3)
 plotField(nexttile, xOut, yOut, phaseFourier(:,:,k), "Fourier", "\Delta\phi (rad)");
 plotField(nexttile, xOut, yOut, phaseWavelet(:,:,k), "Wavelet", "\Delta\phi (rad)");
@@ -522,7 +523,7 @@ vtxWaves.setPolyPixelwise(false);
 vtxWaves.solve();
 elevSmoothed = vtxWaves.outputSubarray("elevation", testRange(1), testRange(2));
 
-figure
+figure('Units', 'normalized', 'Position', [0.2 0.4 0.6 0.45])
 tiledlayout(1, 2)
 
 firstClims = plotField(nexttile, xOut, yOut, elevPixelwise, ...
@@ -562,7 +563,7 @@ vtxWaves.setParallaxCorrection(true);
 vtxWaves.solve();
 elevCorrected = vtxWaves.outputSubarray("elevation", testFrame, testFrame);
 
-figure
+figure('Units', 'normalized', 'Position', [0.2 0.4 0.6 0.45])
 tiledlayout(1, 2)
 plotField(nexttile, xOut, yOut, elevCorrected, "Parallax corrected", "\eta (mm)");
 plotField(nexttile, xOut, yOut, elevCorrected - elevNotCorrected, ...
