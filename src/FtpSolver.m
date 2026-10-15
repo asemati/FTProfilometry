@@ -3006,10 +3006,12 @@ methods (Access = private)
         [minHeight, minProm] = FtpSolver.peakThresholds(segment, ...
             obj.phaseCorrOpts.peakMinFrac, obj.phaseCorrOpts.peakPromFrac);
 
-        [peakVals, peakLocs] = findpeaks(phaseCorrLine, ...
-            'MinPeakDistance', 0.6*obj.fringe.periodOrg, ...
-            'MinPeakProminence', minProm, ...
-            'MinPeakHeight', minHeight);
+        isPeak = islocalmax(phaseCorrLine, ...
+                            'MinProminence', minProm, ...
+                            'MinSeparation', 0.6*obj.fringe.periodOrg, ...
+                            'FlatSelection', 'first');
+        peakLocs = find(isPeak & phaseCorrLine > minHeight);
+        peakVals = phaseCorrLine(peakLocs);
     end
 end
 
@@ -4520,7 +4522,8 @@ methods (Static)
         img = FtpSolver.subtractDC(img, max(ny,nx)/8);
 
         % suppress spectral leakage
-        win = hann(ny) * hann(nx)';
+        hannWin = @(n) 0.5*(1 - cos(2*pi*(0:n-1)'/(n-1)));
+        win = hannWin(ny) * hannWin(nx)';
         F = abs(fft2(img .* win));
 
         % integer frequency grids: bin value = cycles across the crop
