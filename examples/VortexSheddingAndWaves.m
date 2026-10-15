@@ -432,7 +432,7 @@ fprintf("Mean absolute phase difference between Fourier and Wavelet methods: %.3
 % phase correction, becomes the reference for all that follow. In contrast,
 % the spatial method performs correctly throughout.
 
-testRange = [232 265]; 
+testRange = [522 555]; 
 vtxWaves.setSolveRange(testRange(1), testRange(2));
 vtxWaves.setDemodulation(method="fourier");
 
