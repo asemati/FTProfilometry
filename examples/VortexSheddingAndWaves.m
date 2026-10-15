@@ -245,7 +245,7 @@ img = img{1};
 refImg = vtxWaves.getRefImage();
 
 f0 = 1/vtxWaves.fringe.period;        % carrier, cycles per computational pixel
-nVec = vtxWaves.fringe.normVec;
+nVec = vtxWaves.fringe.normalVec;
 filterRadius = f0*vtxWaves.demodOpts.filterWidthFrac;
 [ny, nx] = size(img);
 fx = ((0:nx-1) - floor(nx/2))/nx;     % cycles per pixel
