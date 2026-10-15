@@ -213,7 +213,7 @@ outlierHeights = ismember(heightVec, [5 10]);
 % helps the fit converge:
 %   calibCase.calibrateTakeda(heightVec, boundsL=[Lmin Lmax], boundsD=[dmin dmax]);
 
-calibCase.calibrateTakeda(heightVec, excludeHeights=outlierHeights, boundsD=[-inf inf]);
+calibCase.calibrateTakeda(heightVec, excludeHeights=outlierHeights);
 L = calibCase.elevModel.L;
 d = calibCase.elevModel.d;
 
