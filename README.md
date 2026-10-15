@@ -30,9 +30,7 @@ recording.
 
 - MATLAB R2024b or newer
 - Image Processing Toolbox
-- Signal Processing Toolbox
 - Computer Vision Toolbox
-- Wavelet Toolbox
 
 ### Third-party dependencies
 

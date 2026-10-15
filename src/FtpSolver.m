@@ -36,9 +36,7 @@ classdef FtpSolver < handle
 %     unwrap2D (only for setUnwrapMethod("2D"))
 %     Davis readimx library (for .set and .im7 file formats)
 %     Image Processing Toolbox
-%     Signal Processing Toolbox
 %     Computer Vision Toolbox
-%     Wavelet Toolbox
 %
 %   REFERENCE
 %     Semati, A., Shankaran, A., Smeltzer, B.K. et al. Simultaneous
@@ -4392,6 +4390,52 @@ methods (Access = private, Static)
         end
     end
 
+    function W4D = morletTransform2D(img, scales, anglesRad, sigma, gamma)
+    % Two-dimensional continuous wavelet transform with the Morlet wavelet.
+    %   W4D = morletTransform2D(img, scales, anglesRad, sigma, gamma) returns
+    %   the complex coefficients of IMG as an array of size
+    %   [size(img,1), size(img,2), numel(scales), numel(anglesRad)].
+    %   Gives the same result as the Wavelet Toolbox call
+    %       cwtft2(img, wavelet = {"morlet", {6, sigma, gamma}}, ...
+    %              scales = scales, angles = anglesRad, norm = "L1")
+    %   with its singleton plane dimension removed.
+    %
+    %   The wavelet is built in the Fourier domain. For scale a and angle
+    %   theta, the angular wavenumbers (kx, ky), in radians per pixel, are
+    %   rotated and stretched into
+    %       u = a*(kx*cos(theta) - ky*sin(theta))
+    %       v = a*(kx*sin(theta) + ky*cos(theta))
+    %   and the filter is the Gaussian
+    %       exp(-sigma^2*((u - omega0)^2 + (gamma*v)^2)/2),  omega0 = 6,
+    %   centered at (kx, ky) = (omega0/a)*(cos(theta), -sin(theta)).
+    %   sigma sets the filter width and gamma its anisotropy.
+    %   Each filter is scaled to a peak gain of one on the sampled grid,
+    %   equivalent to the L1 normalization of cwtft2.
+
+        omega0 = 6;
+        [nRows, nCols] = size(img);
+        F = fft2(img);
+
+        % wavenumber axes
+        kx = 2*pi/nCols * [0:floor((nCols-1)/2), floor((nCols-1)/2)-nCols+1:-1];
+        ky = 2*pi/nRows * [0:floor((nRows-1)/2), floor((nRows-1)/2)-nRows+1:-1];
+        [KX, KY] = meshgrid(kx, ky);
+
+        W4D = zeros(nRows, nCols, numel(scales), numel(anglesRad), 'like', F);
+        for iA = 1:numel(anglesRad)
+            cosA = cos(anglesRad(iA));
+            sinA = sin(anglesRad(iA));
+            for iS = 1:numel(scales)
+                a = scales(iS);
+                u = a*(cosA*KX - sinA*KY);
+                v = a*(sinA*KX + cosA*KY);
+                mask = exp(-sigma^2 * ((u - omega0).^2 + (gamma*v).^2)/2);
+                mask = mask/max(mask, [], 'all');
+                W4D(:, :, iS, iA) = ifft2(F .* mask);
+            end
+        end
+    end
+    
     function surfaceCoeffs = fitCoeffSurfaces(coeffMatOrg)
     % Fit a second-order surface to each pixelwise coefficient plane.
     %   Each plane is fitted by least squares over its finite
@@ -4582,12 +4626,12 @@ methods (Static)
     %   Returns the complex CWT coefficients of IMG as an array of size
     %   [size(IMG,1), size(IMG,2), numel(SCALES), nAngles], L1-normalized.
     %
-    %   2-D input: Wavelet Toolbox CWTFT2 with the anisotropic Morlet
-    %   wavelet {Omega0 = 6, sigma, gamma}
+    %   2-D input: Morlet wavelet {Omega0 = 6, sigma, gamma}, computed by
+    %   FtpSolver.morletTransform2D.
     %
     %   1-D input (row or column vector): the analytic Morlet wavelet is
-    %   built directly in the Fourier domain (k0 = 6, width set by sigma);
-    %   anglesdeg and gamma are ignored and nAngles = 1.
+    %   built directly in the Fourier domain (k0 = 6, width set by sigma).
+    %   anglesDeg and gamma are ignored and nAngles = 1.
     %   If fringeNormalAxis ('X' or 'Y') is provided, pads the array in
     %   that direction only and in both directions otherwise.
 
@@ -4630,15 +4674,9 @@ methods (Static)
             else
                 paddedImg = padarray(img, [padSize padSize], 0);
             end
-            cwtOut = cwtft2(paddedImg, ...
-                wavelet = {"morlet", {6, sigma, gamma}}, ...
-                scales  = scales, ...
-                angles  = deg2rad(anglesDeg), ...
-                norm    = "L1");
 
-            % cfs is [rows x cols x 1 x nScales x nAngles]
-            % drop the singleton plane dimension and crop the padding.
-            W4D = permute(cwtOut.cfs, [1 2 4 5 3]);
+            W4D = FtpSolver.morletTransform2D(paddedImg, scales, ...
+                deg2rad(anglesDeg), sigma, gamma);
             W4D = W4D(padSize+1:end-padSize, padSize+1:end-padSize, :, :);
         end
     end
