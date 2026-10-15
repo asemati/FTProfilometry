@@ -1,6 +1,5 @@
 function calibCell = readDavisCalibration(xmlAddr)
-% READDAVISCALIBRATION - Produces a cell containing calibration data read
-%                        from a Davis .xml file.
+% Produces a cell containing calibration data read from a Davis .xml file.
 %
 % Usage: calib = readDavisCalibration('D:/path/to/Calibration.xml');
 %
@@ -17,32 +16,29 @@ function calibCell = readDavisCalibration(xmlAddr)
 %   contains the intrinsic and extrinsic parameters. 
 % 
 %
-% Other m-files required: xml2struct
-% Subfunctions: readDavisPinholeCalibration, readDavisPolyCalibration
+% Other m-files required: none
+% Subfunctions: readDavisPinholeCalibration, readDavisPolyCalibration,
+%               hasNode
 % MAT-files required: none
 %
 %
 % Author: Ali Semati
-% May 2025; Last revision: 21-August-2026
+% May 2025
 %
 %------------- BEGIN CODE --------------
 
-calibStruct = xml2struct(xmlAddr);
+calibStruct = readstruct(xmlAddr);
 
-if iscell(calibStruct.Calibration.CoordinateSystemsForEachView.CoordinateSystem.CoordinateMapper)
-    cMap = calibStruct.Calibration.CoordinateSystemsForEachView.CoordinateSystem.CoordinateMapper;
-else
-    cMap{1} = calibStruct.Calibration.CoordinateSystemsForEachView.CoordinateSystem.CoordinateMapper;
-end
+cMap = calibStruct.CoordinateSystemsForEachView.CoordinateSystem.CoordinateMapper;
 
-calibCell = cell(length(cMap), 2);
+calibCell = cell(numel(cMap), 2);
 
-for i = 1:length(cMap)
-    if isfield(cMap{i}, 'PinholeParameters')
-        calibCell{i,1} = readDavisPinholeCalibration(cMap{i});
+for i = 1:numel(cMap)
+    if hasNode(cMap(i), 'PinholeParameters')
+        calibCell{i,1} = readDavisPinholeCalibration(cMap(i));
         calibCell{i,2} = "pinhole"; 
-    elseif isfield(cMap{i}, 'PolynomialParameters')
-        calibCell{i,1} = readDavisPolyCalibration(cMap{i});
+    elseif hasNode(cMap(i), 'PolynomialParameters')
+        calibCell{i,1} = readDavisPolyCalibration(cMap(i));
         calibCell{i,2} = "polynomial"; 
     end
 end
@@ -50,15 +46,15 @@ end
 end
 
 function calibStruct = readDavisPinholeCalibration(cMap)
-%   Extracts pinhole parameters from Davis pinhole calibration struct. 
+% Extracts pinhole parameters from Davis pinhole calibration struct. 
 %   The field "intrinsics" in calibStruct contains intrinsics in OpenCV 
 %   format (used by Davis). This format has zero based indexing, making the
 %   first pixel (0,0). The field "intrinsicsMatlab" contains the same
 %   information, but with the principal point shifted by one to account for
 %   the fact that in Matlab, the first pixel is (1,1).
 
-    if isfield(cMap.Attributes, 'CameraIdentifier')
-        camNum = str2double(cMap.Attributes.CameraIdentifier);
+    if hasNode(cMap, 'CameraIdentifierAttribute')
+        camNum = double(cMap.CameraIdentifierAttribute);
     else
         camNum = [];
     end
@@ -75,68 +71,67 @@ function calibStruct = readDavisPinholeCalibration(cMap)
     internalParams = pinholeParams.InternalCameraParameters;
     commonParams = pinholeParams.CommonParameters;
     
-    % Davis stores data as strings, convert to double
-    radialDist(1) = str2double(internalParams.RadialDistortion.Attributes.radialDistortionCoefficient1);
-    radialDist(2) = str2double(internalParams.RadialDistortion.Attributes.radialDistortionCoefficient2);
+    radialDist(1) = double(internalParams.RadialDistortion.radialDistortionCoefficient1Attribute);
+    radialDist(2) = double(internalParams.RadialDistortion.radialDistortionCoefficient2Attribute);
     radialDist(3) = 0;
-    if isfield(internalParams, 'TangentialDistortion')
-        tangentialDist(1) = str2double(internalParams.TangentialDistortion.Attributes.tangentialDistortionCoefficient1);
-        tangentialDist(2) = str2double(internalParams.TangentialDistortion.Attributes.tangentialDistortionCoefficient2);
+    if hasNode(internalParams, 'TangentialDistortion')
+        tangentialDist(1) = double(internalParams.TangentialDistortion.tangentialDistortionCoefficient1Attribute);
+        tangentialDist(2) = double(internalParams.TangentialDistortion.tangentialDistortionCoefficient2Attribute);
     else
         
         tangentialDist(1:2) = 0;
     end
     
     % pixel at optical center
-    principalPointX = str2double(internalParams.PrincipalPoint.Attributes.x);
-    principalPointY = str2double(internalParams.PrincipalPoint.Attributes.y);
+    principlePointX = double(internalParams.PrincipalPoint.xAttribute);
+    principlePointY = double(internalParams.PrincipalPoint.yAttribute);
     
     % length of pixel in camera sensor
-    pixelSize = str2double(internalParams.SensorPixelSizeMm.Attributes.Value);
+    pixelSize = double(internalParams.SensorPixelSizeMm.ValueAttribute);
     
-    focalLengthX = str2double(internalParams.FocalLengthPixel.Attributes.x)/pixelSize;
-    focalLengthY = str2double(internalParams.FocalLengthPixel.Attributes.y)/pixelSize;
+    focalLengthX = double(internalParams.FocalLengthPixel.xAttribute)/pixelSize;
+    focalLengthY = double(internalParams.FocalLengthPixel.yAttribute)/pixelSize;
     
-    imageSize(1) = str2double(commonParams.OriginalImageSize.Attributes.Height);
-    imageSize(2) = str2double(commonParams.OriginalImageSize.Attributes.Width);
+    imageSize(1) = double(commonParams.OriginalImageSize.HeightAttribute);
+    imageSize(2) = double(commonParams.OriginalImageSize.WidthAttribute);
     
     distortionCoefficients = [radialDist(1) radialDist(2) tangentialDist(1) tangentialDist(2) radialDist(3)];
     
     intrinsics = cameraIntrinsics([focalLengthX, focalLengthY], ...
-                            [principalPointX principalPointY], ...
+                            [principlePointX principlePointY], ...
                             imageSize, ...
                             "RadialDistortion",distortionCoefficients(1:2), ...
                             "TangentialDistortion", distortionCoefficients(3:4));
     
     intrinsicsMatlab = cameraIntrinsics([focalLengthX, focalLengthY], ...
-                            [principalPointX + 1, principalPointY + 1], ...
+                            [principlePointX + 1, principlePointY + 1], ...
                             imageSize, ...
                             "RadialDistortion",distortionCoefficients(1:2), ...
                             "TangentialDistortion", distortionCoefficients(3:4));
     
-    translation = pinholeParams.ExternalCameraParameters.TranslationMm.Attributes;
-    translation = [str2double(translation.Tx); str2double(translation.Ty); str2double(translation.Tz)];
+    translation = pinholeParams.ExternalCameraParameters.TranslationMm;
+    translation = [double(translation.TxAttribute); double(translation.TyAttribute); double(translation.TzAttribute)];
     
     % Euler angles (x,y,z)
-    rotation = pinholeParams.ExternalCameraParameters.RotationAngles.Attributes;
-    rotation = [str2double(rotation.Rx); str2double(rotation.Ry); str2double(rotation.Rz)];
+    rotation = pinholeParams.ExternalCameraParameters.RotationAngles;
+    rotation = [double(rotation.RxAttribute); double(rotation.RyAttribute); double(rotation.RzAttribute)];
     
     scaleStructDavis = struct();
     Scales = pinholeParams.Scales;
     
     scaleStructDavis.X.Slope = ...
-        str2double(pinholeParams.Scales.LinearScaleX.Attributes.FactorMmPerPixel);
+        double(Scales.LinearScaleX.FactorMmPerPixelAttribute);
     scaleStructDavis.X.SlopeOrg = scaleStructDavis.X.Slope;
     scaleStructDavis.X.Offset = ...
-        str2double(pinholeParams.Scales.LinearScaleX.Attributes.OffsetMm);
-    scaleStructDavis.X.Unit = Scales.LinearScaleX.Attributes.Unit;
+        double(Scales.LinearScaleX.OffsetMmAttribute);
+    scaleStructDavis.X.Unit = char(Scales.LinearScaleX.UnitAttribute);
     
     scaleStructDavis.Y.Slope = ...
-        str2double(Scales.LinearScaleY.Attributes.FactorMmPerPixel);
+        double(Scales.LinearScaleY.FactorMmPerPixelAttribute);
     scaleStructDavis.Y.SlopeOrg = scaleStructDavis.Y.Slope;
     scaleStructDavis.Y.Offset = ...
-        str2double(Scales.LinearScaleY.Attributes.OffsetMm);
-    scaleStructDavis.Y.Unit = Scales.LinearScaleY.Attributes.Unit;
+        double(Scales.LinearScaleY.OffsetMmAttribute);
+    scaleStructDavis.Y.Unit = char(Scales.LinearScaleY.UnitAttribute);
     
     
     
@@ -153,61 +148,50 @@ end
 
 function calibCell = readDavisPolyCalibration(cMap)
 % Extracts polynomial coefficients from Davis polynomial calibration struct. 
-    if isfield(cMap.Attributes, 'CameraIdentifier')
-        camNum = str2double(cMap.Attributes.CameraIdentifier);
+    if hasNode(cMap, 'CameraIdentifierAttribute')
+        camNum = double(cMap.CameraIdentifierAttribute);
     else
         camNum = [];
     end
-    calibType = cMap.Attributes.Type;
+    calibType = char(cMap.TypeAttribute);
     
     params = cMap.PolynomialParameters;
-    if iscell(params.PolynomialMapping)
-        mappingCell = params.PolynomialMapping;
-    else
-        mappingCell{1} = params.PolynomialMapping;
-    end
+    mappings = params.PolynomialMapping;    % struct array, one per plane
     
-    calibCell = cell(1, length(mappingCell));
+    calibCell = cell(1, numel(mappings));
 
-    for planeNum = 1:length(mappingCell)
-        mapping = mappingCell{planeNum};
-        A_txt = mapping.Polynomial3rdOrder.CoefficientsA.Attributes;
-        B_txt = mapping.Polynomial3rdOrder.CoefficientsB.Attributes;
-        S0 = str2double(mapping.Origin.Attributes.s_o);
-        T0 = str2double(mapping.Origin.Attributes.t_o);
-        dwSize = params.CommonParameters.CorrectedImageSize.Attributes;
-        dwWidth = str2double(dwSize.Width);
-        dwHeight = str2double(dwSize.Height);
+    % Coefficient name suffixes in the order the polynomial below uses
+    % them: 1, s, s^2, s^3, t, t^2, t^3, s*t, s^2*t, s*t^2. Davis names
+    % the attributes a_<suffix> and b_<suffix>.
+    coeffTerms = ["o" "s" "s2" "s3" "t" "t2" "t3" "st" "s2t" "st2"];
+
+    for planeNum = 1:numel(mappings)
+        mapping = mappings(planeNum);
+        coeffNodeA = mapping.Polynomial3rdOrder.CoefficientsA;
+        coeffNodeB = mapping.Polynomial3rdOrder.CoefficientsB;
+        S0 = double(mapping.Origin.s_oAttribute);
+        T0 = double(mapping.Origin.t_oAttribute);
+        dwSize = params.CommonParameters.CorrectedImageSize;
+        dwWidth = double(dwSize.WidthAttribute);
+        dwHeight = double(dwSize.HeightAttribute);
         dwSize = [dwWidth, dwHeight];
-        orgSize = params.CommonParameters.OriginalImageSize.Attributes;
-        orgWidth = str2double(orgSize.Width);
-        orgHeight = str2double(orgSize.Height);
+        orgSize = params.CommonParameters.OriginalImageSize;
+        orgWidth = double(orgSize.WidthAttribute);
+        orgHeight = double(orgSize.HeightAttribute);
         orgSize = [orgWidth, orgHeight];
-        pixelsPerMM = params.CommonParameters.PixelPerMmFactor.Attributes.Value;
-        pixelsPerMM = str2double(pixelsPerMM);
-        mmPerPixel_x = params.Scales.LinearScaleX.Attributes.FactorMmPerPixel;
-        mmPerPixel_x = str2double(mmPerPixel_x);
-        mmPerPixel_y = params.Scales.LinearScaleY.Attributes.FactorMmPerPixel;
-        mmPerPixel_y = str2double(mmPerPixel_y);
+        pixelsPerMM = double(params.CommonParameters.PixelPerMmFactor.ValueAttribute);
+        mmPerPixel_x = double(params.Scales.LinearScaleX.FactorMmPerPixelAttribute);
+        mmPerPixel_y = double(params.Scales.LinearScaleY.FactorMmPerPixelAttribute);
         
-        offsetX = params.Scales.LinearScaleX.Attributes.OffsetMm;
-        offsetX = str2double(offsetX);
-        offsetY = params.Scales.LinearScaleY.Attributes.OffsetMm;
-        offsetY = str2double(offsetY);
-        
-        fieldsA = fieldnames(A_txt);
-        fieldsB = fieldnames(B_txt);
-        
-        correctFieldOrd = [1 2 3 5 8 9 10 6 4 7];
-        fieldsA = fieldsA(correctFieldOrd);
-        fieldsB = fieldsB(correctFieldOrd);
+        offsetX = double(params.Scales.LinearScaleX.OffsetMmAttribute);
+        offsetY = double(params.Scales.LinearScaleY.OffsetMmAttribute);
         
         A = zeros(10,1);
         B = zeros(10,1);
-        
+
         for i = 1:10
-            A(i) = str2double(A_txt.(fieldsA{i}));
-            B(i) = str2double(B_txt.(fieldsB{i}));
+            A(i) = double(coeffNodeA.("a_" + coeffTerms(i) + "Attribute"));
+            B(i) = double(coeffNodeB.("b_" + coeffTerms(i) + "Attribute"));
         end
                 
         calibStruct = struct();
@@ -254,7 +238,7 @@ function calibCell = readDavisPolyCalibration(cMap)
         scaling.Y.Offset = offsetY;
         
         calibStruct.scaling = scaling;
-        zLevelPixel = str2double(mapping.ZPosition.Attributes.Value);
+        zLevelPixel = double(mapping.ZPosition.ValueAttribute);
         calibStruct.zLevel = zLevelPixel*abs(mmPerPixel_x);
         calibStruct.camNum = camNum;
         calibStruct.calibType = calibType;
@@ -264,3 +248,12 @@ function calibCell = readDavisPolyCalibration(cMap)
 
 end
 
+function tf = hasNode(s, name)
+% True if scalar struct s has field name holding real content. readstruct
+%   gives every element of a struct array the union of its siblings'
+%   fields and fills the ones an element lacks with missing.
+%   Inputs:     s       - scalar struct
+%               name    - field name
+%   Output:     tf      - logical
+    tf = isfield(s, name) && ~isa(s.(name), 'missing');
+end
