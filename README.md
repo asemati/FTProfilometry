@@ -32,7 +32,6 @@ recording.
 - Image Processing Toolbox
 - Signal Processing Toolbox
 - Computer Vision Toolbox
-- Curve Fitting Toolbox
 - Wavelet Toolbox
 
 ### Third-party dependencies

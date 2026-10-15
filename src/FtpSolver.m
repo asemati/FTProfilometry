@@ -32,11 +32,10 @@ classdef FtpSolver < handle
 %     readData          - Read frames back from a saved result file
 %
 %   DEPENDENCIES
-%     xml2struct, rectifyImagePinhole, readDavisCalibration
+%     rectifyImagePinhole, readDavisCalibration
 %     unwrap2D (only for setUnwrapMethod("2D"))
 %     Davis readimx library (for .set and .im7 file formats)
 %     Image Processing Toolbox
-%     Curve Fitting Toolbox
 %     Signal Processing Toolbox
 %     Computer Vision Toolbox
 %     Wavelet Toolbox
@@ -743,42 +742,16 @@ methods (Access = public)
             opts.boundsD = sort([0 sign(d0)*Inf]);
         end
 
-        % If the linear estimate is not finite or lies outside the bounds, start
-        % instead from the midpoint of the bounds. For an unbounded parameter,
-        % start L at ten times the largest calibration height and d at L/4,
-        % clipped to the bounds.
-        if all(isfinite(opts.boundsL))
-            Lfall = mean(opts.boundsL);
-        else
-            Lfall = min(max(10*max(abs(heightVec)), opts.boundsL(1)), opts.boundsL(2));
-        end
-        if all(isfinite(opts.boundsD))
-            dfall = mean(opts.boundsD);
-        else
-            dfall = min(max(Lfall/4, opts.boundsD(1)), opts.boundsD(2));
-        end
-        if ~isfinite(L0) || L0 < opts.boundsL(1) || L0 > opts.boundsL(2)
-            L0 = Lfall;
-        end
-        if ~isfinite(d0) || d0 < opts.boundsD(1) || d0 > opts.boundsD(2)
-            d0 = dfall;
+        % Scale of the d search: the linear-model estimate when usable,
+        % otherwise a hundred times the largest calibration height
+        dScale = abs(d0);
+        if ~isfinite(dScale) || dScale == 0
+            dScale = 100*max(abs(heightVec));
         end
 
-        % Coefficient order [L, d] follows the argument order of the handle,
-        % and f0 is fixed at the value it has when the handle is created.
-        % fit() minimizes sum(w.*r.^2), whereas calibratePoly minimizes
-        % sum((w.*r).^2), so the weights are squared to make the two agree.
-        ft = fittype(@(L, d, dPhi) L*dPhi ./ (dPhi - 2*pi*f0*d), 'independent', 'dPhi');
-        fo = fitoptions('Method', 'NonlinearLeastSquares', ...
-                        'Lower', [opts.boundsL(1), opts.boundsD(1)], ...
-                        'Upper', [opts.boundsL(2), opts.boundsD(2)], ...
-                        'StartPoint', [L0, d0], ...
-                        'Weights', weights.^2);
-        takedaFit = fit(phaseVec, heightVec, ft, fo);
-
-        L = takedaFit.L;
-        d = takedaFit.d;
-
+        [L, d] = FtpSolver.fitTakedaModel(phaseVec, heightVec, weights, f0, ...
+            opts.boundsL, opts.boundsD, dScale);
+        
         % Diagnostics
         elevCrop = FtpSolver.evalTakedaElev(double(phaseCrop), L, d, f0);
 
@@ -867,7 +840,7 @@ methods (Access = public)
         coeffMatOrg = NaN(geom.rawSize(1), geom.rawSize(2), size(coeffMat, 3));
         coeffMatOrg(geom.embedRows, geom.embedCols, :) = coeffMat;
 
-        % Smooth (poly22) coefficients
+        % Smooth (second-order surfaces) coefficients
         surfaceCoeffs   = FtpSolver.fitCoeffSurfaces(coeffMatOrg);
         smoothCoeffCrop = FtpSolver.evalCoeffSurfaces(surfaceCoeffs, ...
             geom.pMeshX_crop, geom.pMeshY_crop);
@@ -909,8 +882,8 @@ methods (Access = public)
 
     function writePolyCalibration(obj, path)
     % Save the polynomial calibration to a .mat file.
-    %   The resized working copy (coeffMat) is dropped; only the RAW-frame
-    %   coefficients and the fitted surfaces are written.
+    %   Only the RAW-frame pixelwise coefficients and the coefficients of
+    %   the fitted surfaces are written. 
     %   Input:  path - write path of .mat calibration file
 
         temp = struct;
@@ -3762,7 +3735,7 @@ methods (Access = private)
             if model.poly.pixelwise
                 entries(end + 1, :) = {"Coefficients", "pixelwise"};
             else
-                entries(end + 1, :) = {"Coefficients", "smoothed (poly22 fits)"};
+                entries(end + 1, :) = {"Coefficients", "smoothed (second-order surfaces)"};
             end
             if ~isempty(model.poly.coeffMatOrg)
                 entries(end + 1, :) = {"Polynomial order", size(model.poly.coeffMatOrg, 3) - 1};
@@ -4419,16 +4392,16 @@ methods (Access = private, Static)
 
     function surfaceCoeffs = fitCoeffSurfaces(coeffMatOrg)
     % Fit a second-order surface to each pixelwise coefficient plane.
-        % Each plane is fitted by least squares over its finite
-        % (calibrated) pixels with 
-        %       c = p00 + p10*x + p01*y + p20*x^2 + p11*x*y + p02*y^2, 
-        % where x and y are the RAW pixel column and row indices. 
-        % Input:
-        %   coeffMatOrg   - pixelwise coefficients, RAW frame, NaN outside
-        %                   the calibrated region
-        % Output:
-        % surfaceCoeffs - 6 x nPlanes; column i holds
-        %                 [p00; p10; p01; p20; p11; p02] of plane i
+    %   Each plane is fitted by least squares over its finite
+    %   (calibrated) pixels with 
+    %       c = p00 + p10*x + p01*y + p20*x^2 + p11*x*y + p02*y^2, 
+    %   where x and y are the RAW pixel column and row indices. 
+    %   Input:
+    %       coeffMatOrg   - pixelwise coefficients, RAW frame, NaN outside
+    %                       the calibrated region
+    %   Output:
+    %       surfaceCoeffs - 6 x nPlanes; column i holds
+    %                       [p00; p10; p01; p20; p11; p02] of plane i
         [Ny, Nx, nPlanes] = size(coeffMatOrg);
         [xMesh, yMesh] = meshgrid(1:Nx, 1:Ny);
         surfaceCoeffs = zeros(6, nPlanes);
@@ -4444,11 +4417,11 @@ methods (Access = private, Static)
 
     function coeffPlanes = evalCoeffSurfaces(surfaceCoeffs, xMesh, yMesh)
     % Evaluate the fitted coefficient surfaces at RAW pixel coordinates.
-        %   Inputs:
-        %       surfaceCoeffs - 6 x nPlanes, from fitCoeffSurfaces
-        %       xMesh, yMesh  - RAW pixel column and row indices
-        %   Output: 
-        %       coeffPlanes   - size(xMesh) x nPlanes
+    %   Inputs:
+    %       surfaceCoeffs - 6 x nPlanes, from fitCoeffSurfaces
+    %       xMesh, yMesh  - RAW pixel column and row indices
+    %   Output: 
+    %       coeffPlanes   - size(xMesh) x nPlanes
         coeffPlanes = reshape(FtpSolver.quadBasis(xMesh(:), yMesh(:)) * surfaceCoeffs, ...
                               [size(xMesh), size(surfaceCoeffs, 2)]);
     end
@@ -4456,6 +4429,30 @@ methods (Access = private, Static)
     function A = quadBasis(x, y)
     % Terms of the second-order surface, one column each: 1, x, y, x^2, x*y, y^2.
         A = [ones(size(x)), x, y, x.^2, x.*y, y.^2];
+    end
+
+    function [L, d] = fitTakedaModel(phaseVec, heightVec, weights, f0, boundsL, boundsD, dScale)
+    % Bounded weighted least-squares fit of h = L*dPhi./(dPhi - 2*pi*f0*d).
+    %   Minimizes sum((weights.*(h - model)).^2). L enters the model
+    %   linearly, so for a fixed d the best L follows in closed form and is
+    %   clipped to boundsL. d is found by a bounded one-dimensional search
+    %   over theta, with d = dScale*tan(theta), which maps an infinite bound
+    %   on d to a finite bound on theta.
+        phaseVec  = phaseVec(:);
+        heightVec = heightVec(:);
+        w2        = weights(:).^2;
+
+        shape  = @(dd) phaseVec ./ (phaseVec - 2*pi*f0*dd);
+        bestL  = @(g) min(max(sum(w2.*heightVec.*g) / sum(w2.*g.^2), ...
+            boundsL(1)), boundsL(2));
+        misfit = @(g) sum(w2.*(heightVec - bestL(g)*g).^2);
+        cost   = @(theta) misfit(shape(dScale*tan(theta)));
+
+        thetaBounds = atan(boundsD / dScale);
+        theta = fminbnd(cost, thetaBounds(1), thetaBounds(2), ...
+            optimset('TolX', 1e-12));
+        d = dScale*tan(theta);
+        L = bestL(shape(d));
     end
 end
 
@@ -4488,12 +4485,13 @@ methods (Static)
             % fit plane to data and subtract
             temp = double(imresize(data(:,:,i), downscaleFactor, ...
                           'bilinear', Antialiasing=false));
-            [xOut, yOut, zOut] = prepareSurfaceData(xGrid_coarse, yGrid_coarse, temp);
-            if numel(zOut) < 3
+            valid = isfinite(temp);
+            if nnz(valid) < 3
                 continue
             end
-            sf = fit([xOut, yOut], zOut, 'poly11');
-            fittedPlane = sf.p00 + xGrid*sf.p10 + yGrid*sf.p01;
+            A = [ones(nnz(valid), 1), xGrid_coarse(valid), yGrid_coarse(valid)];
+            p = A \ temp(valid);
+            fittedPlane = p(1) + p(2)*xGrid + p(3)*yGrid;
             data(:,:,i) = data(:,:,i) - fittedPlane;
         end
     end
