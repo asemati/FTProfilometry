@@ -18,8 +18,8 @@ function [imageRct, tform, scaling, xMesh, yMesh] = rectifyImagePinhole(img, cal
 %   img         - Numeric array representing the image.
 %   calibStruct - Calibration struct containing intrinsics and extrinsics.
 %                 This struct must contain the fields
-%                    - intrinsicsMatlab:    Matlab cameraIntrinsics object.
-%                    - extrinsics:          Matlab rigidtform3d object.
+%                    - intrinsics:  Matlab cameraIntrinsics object.
+%                    - extrinsics:  Matlab rigidtform3d object.
 %   dz          - Optional scalar specifying the offset of the object plane
 %                 along the world Z-axis (in mm). When dz = 0 (default), 
 %                 the object plane coincides with the world XY-plane 
@@ -58,8 +58,8 @@ end
 
 n = [0;0;1];    % plane normal vector in world coordinates
 
-imageSize = calibStruct.intrinsicsMatlab.ImageSize;     % (Ny, Nx)
-K = calibStruct.intrinsicsMatlab.K;   % intrinsic matrix
+imageSize = calibStruct.intrinsics.ImageSize;     % (Ny, Nx)
+K = calibStruct.intrinsics.K;   % intrinsic matrix
 R1 = calibStruct.extrinsics.R;  % rotation matrix
 % vector from camera origin to world origin in camera coordinates
 t1 = calibStruct.extrinsics.Translation';
@@ -121,7 +121,7 @@ tform = projtform2d(H);
 
 % homography cannot correct for non-linear distortions
 % undistort first
-imgUndist = undistortImage(img, calibStruct.intrinsicsMatlab);
+imgUndist = undistortImage(img, calibStruct.intrinsics);
 
 % apply perspective transformation
 [imageRct, RB]= imwarp(imgUndist, tform);

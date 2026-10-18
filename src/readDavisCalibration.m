@@ -47,10 +47,10 @@ end
 
 function calibStruct = readDavisPinholeCalibration(cMap)
 % Extracts pinhole parameters from Davis pinhole calibration struct. 
-%   The field "intrinsics" in calibStruct contains intrinsics in OpenCV 
-%   format (used by Davis). This format has zero based indexing, making the
-%   first pixel (0,0). The field "intrinsicsMatlab" contains the same
-%   information, but with the principal point shifted by one to account for
+%   Davis uses the OpenCV format for its pinhole model. This format uses
+%   zero based indexing, making the first pixel (0,0). The intrinsics
+%   object produced here contains the same information as the Davis
+%   calibration, but with the principal point shifted by one to account for
 %   the fact that in Matlab, the first pixel is (1,1).
 
     if hasNode(cMap, 'CameraIdentifierAttribute')
@@ -98,12 +98,6 @@ function calibStruct = readDavisPinholeCalibration(cMap)
     distortionCoefficients = [radialDist(1) radialDist(2) tangentialDist(1) tangentialDist(2) radialDist(3)];
     
     intrinsics = cameraIntrinsics([focalLengthX, focalLengthY], ...
-                            [principlePointX principlePointY], ...
-                            imageSize, ...
-                            "RadialDistortion",distortionCoefficients(1:2), ...
-                            "TangentialDistortion", distortionCoefficients(3:4));
-    
-    intrinsicsMatlab = cameraIntrinsics([focalLengthX, focalLengthY], ...
                             [principlePointX + 1, principlePointY + 1], ...
                             imageSize, ...
                             "RadialDistortion",distortionCoefficients(1:2), ...

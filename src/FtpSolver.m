@@ -365,7 +365,7 @@ methods (Access = public)
             state (1,1) logical
         end
         obj.procOpts.parallaxCorrection = state;
-        if state && ~isfield(obj.cameraCalib, 'intrinsicsMatlab')
+        if state && ~isfield(obj.cameraCalib, 'intrinsics')
             warning("FtpSolver:parallaxCorrectionWithoutPinhole", ...
                 "No pinhole camera calibration is loaded. Parallax error " + ...
                 "correction is skipped until one is read.")
@@ -1936,7 +1936,7 @@ methods (Access = private)
         % ray geometry of the 2-D parallax error correction
         obj.worldCoords.mesh.parallax = [];
         if obj.procOpts.parallaxCorrection && obj.outputConfig.elevStorage ...
-                && isfield(obj.cameraCalib, 'intrinsicsMatlab') ...
+                && isfield(obj.cameraCalib, 'intrinsics') ...
                 && min(size(obj.imgData.ref)) >= 2
             obj.prepareParallaxGeometry();
         end
@@ -2245,7 +2245,7 @@ methods (Access = private)
         mesh = obj.worldCoords.mesh;
         [ny, nx] = size(mesh.x);
 
-        K_inv = inv(obj.cameraCalib.intrinsicsMatlab.K);
+        K_inv = inv(obj.cameraCalib.intrinsics.K);
         R     = obj.cameraCalib.extrinsics.R;
         t     = obj.cameraCalib.extrinsics.Translation';
         pix = [mesh.xPixel(:), mesh.yPixel(:), ones(nx*ny, 1)]';  % 3 x N homogeneous pixels
@@ -2689,7 +2689,7 @@ methods (Access = private)
     %   sample positions using fixed point iteration. Requires a pinhole
     %   calibration.
 
-        if ~isfield(obj.cameraCalib, 'intrinsicsMatlab')
+        if ~isfield(obj.cameraCalib, 'intrinsics')
             return
         end
 
@@ -2792,7 +2792,7 @@ methods (Access = private)
         v    = obj.worldCoords.mesh.yPixel;
 
         % Back-project every pixel to a world-frame camera ray
-        K_inv = inv(obj.cameraCalib.intrinsicsMatlab.K);
+        K_inv = inv(obj.cameraCalib.intrinsics.K);
         R     = obj.cameraCalib.extrinsics.R;
         t     = obj.cameraCalib.extrinsics.Translation';
 
@@ -3260,7 +3260,7 @@ methods (Access = private)
             imgRectified = interp2(obj.cameraCalib.Gx, obj.cameraCalib.Gy, double(img), obj.cameraCalib.GSx, obj.cameraCalib.GSy, 'linear');
             imgRectified(isnan(imgRectified)) = 0;
         elseif strcmpi(obj.cameraCalib.type, 'pinhole')
-            imgRectified = undistortImage(img, obj.cameraCalib.intrinsicsMatlab);
+            imgRectified = undistortImage(img, obj.cameraCalib.intrinsics);
             imgRectified = imwarp(imgRectified, obj.cameraCalib.pTransform);
         else            % no camera calibration
             imgRectified = img;
