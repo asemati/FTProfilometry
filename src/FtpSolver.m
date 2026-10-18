@@ -374,15 +374,19 @@ methods (Access = public)
 
     function setDemodulation(obj, opts)
     % Set the demodulation method and its parameters.
-    %   setDemodulation(method="fourier", filterWidthFrac=0.6)
+    %   setDemodulation(method="fourier", filterWidthFrac=0.5, filterAspectRatio=2)
     %   setDemodulation(method="wavelet", waveletWavelengths=[10 16], ...
     %                   waveletDivisions=20, waveletAngles=0)
     %   Options not named keep their current setting.
     %   method             - "fourier" (default) or "wavelet"
     %   Fourier method:
-    %   filterWidthFrac    - width of the bandpass filter as a fraction of
-    %                        the carrier frequency, between 0 and 1
-    %                        (default 0.6)
+    %   filterWidthFrac    - radius of the bandpass filter across the
+    %                        fringes, as a fraction of the carrier
+    %                        frequency, between 0 and 1 (default 0.6)
+    %   filterAspectRatio  - radius of the bandpass filter along the
+    %                        fringes divided by its radius across them;
+    %                        1 gives a circular filter, values above 1 an
+    %                        ellipse stretched along the fringes
     %   Wavelet method:
     %   waveletWavelengths - [min max] fringe wavelength, in RAW-frame
     %                        pixels, spanned by the wavelet scales
@@ -396,6 +400,7 @@ methods (Access = public)
             obj
             opts.method             (1,1) string {mustBeMember(opts.method, ["fourier", "wavelet"])}
             opts.filterWidthFrac    (1,1) double {mustBePositive, mustBeLessThanOrEqual(opts.filterWidthFrac, 1)}
+            opts.filterAspectRatio  (1,1) double {mustBePositive}
             opts.waveletWavelengths (1,2) double {mustBePositive}
             opts.waveletDivisions   (1,1) double {mustBeInteger, mustBePositive}
             opts.waveletAngles      double {mustBeVector}
@@ -407,6 +412,9 @@ methods (Access = public)
         end
         if isfield(opts, 'filterWidthFrac')
             obj.demodOpts.filterWidthFrac = opts.filterWidthFrac;
+        end
+        if isfield(opts, 'filterAspectRatio')
+            obj.demodOpts.filterAspectRatio = opts.filterAspectRatio;
         end
         if isfield(opts, 'waveletWavelengths')
             if opts.waveletWavelengths(1) > opts.waveletWavelengths(2)
@@ -1148,20 +1156,25 @@ methods (Access = public)
         refImage = obj.imgData.ref;
     end
 
-    function imageCell = getImages(obj, firstTimestep, lastTimestep)
-    % Rectify, preprocess and return the image sequence in a cell array.
+    function imgArr = getImages(obj, firstTimestep, lastTimestep)
+    % Rectify, preprocess and return the image sequence as a 3D array.
         arguments
             obj
             firstTimestep (1,1) double = obj.procOpts.solveRange(1)
             lastTimestep (1,1) double = obj.procOpts.solveRange(2)
         end
 
-        imageCell = cell(1, lastTimestep - firstTimestep + 1);
+        Nt = lastTimestep - firstTimestep + 1;
+        obj.imgData.curr = obj.readImage(firstTimestep);
+        obj.preprocessCurrentImage();
+        [Ny, Nx] = size(obj.imgData.curr);
+        imgArr = zeros(Ny, Nx, Nt);
+        imgArr(:,:,1) = obj.imgData.curr;
 
-        for timestep = firstTimestep:lastTimestep
+        for timestep = firstTimestep + 1:lastTimestep
             obj.imgData.curr = obj.readImage(timestep);
             obj.preprocessCurrentImage();
-            imageCell{timestep - firstTimestep + 1} = obj.imgData.curr;
+            imgArr(:,:,timestep - firstTimestep + 2) = obj.imgData.curr;
         end
     end
 
@@ -2075,7 +2088,9 @@ methods (Access = private)
     % Precompute all reference-dependent quantities for FT demodulation.
     %
     % Sets:
-    %   obj.phaseData.bandpassFilter   - super-Gaussian band-pass centered on carrier
+    %   obj.phaseData.bandpassFilter   - elliptical super-Gaussian band-pass
+    %                                    centered on the carrier, with its
+    %                                    axes across and along the fringes
     %   obj.phaseData.refComplexCoeffs - band-passed complex reference signal,
     %                                    hI0 = ifft2(filter .* fft2(I0))
     %   obj.phaseData.fourierPadding   - padding around the image in
@@ -2083,8 +2098,14 @@ methods (Access = private)
         
         [nyRef, nxRef] = size(obj.imgData.ref);
 
-        alongFringePad = ceil(2/obj.demodOpts.filterWidthFrac * obj.fringe.period);
-        acrossFringePad = ceil(1/obj.demodOpts.filterWidthFrac * obj.fringe.period);
+        % filter radii as fractions of the carrier frequency
+        acrossFrac = obj.demodOpts.filterWidthFrac;
+        alongFrac = obj.demodOpts.filterWidthFrac * obj.demodOpts.filterAspectRatio;
+
+        % the filter kernel is long in each direction in inverse proportion
+        % to the filter radius in that direction
+        alongFringePad = ceil(2/alongFrac * obj.fringe.period);
+        acrossFringePad = ceil(1/acrossFrac * obj.fringe.period);
 
         if strcmpi(obj.fringe.normalAxis, 'Y')
             obj.phaseData.fourierPadding = ...
@@ -2107,9 +2128,15 @@ methods (Access = private)
         kxG = omega * nVec(1);
         kyG = omega * nVec(2);
 
-        kr = sqrt((kx - kxG).^2 + (ky - kyG).^2);
-        w  = omega * obj.demodOpts.filterWidthFrac;
-        obj.phaseData.bandpassFilter = exp(-(kr/w).^8);
+        % distance from the carrier, split into components across the
+        % fringes (along the fringe normal) and along them
+        nUnit = nVec/norm(nVec);
+        kAcross = (kx - kxG)*nUnit(1) + (ky - kyG)*nUnit(2);
+        kAlong = -(kx - kxG)*nUnit(2) + (ky - kyG)*nUnit(1);
+
+        % elliptical distance: 1 on the filter edge, where the gain is 1/e
+        kr = sqrt((kAcross/(omega*acrossFrac)).^2 + (kAlong/(omega*alongFrac)).^2);
+        obj.phaseData.bandpassFilter = exp(-kr.^8);
 
         obj.phaseData.refComplexCoeffs = obj.cropPadding( ...
             ifft2(obj.phaseData.bandpassFilter .* fft2(refPadded)));
@@ -3668,7 +3695,8 @@ methods (Access = private)
         demod = obj.demodOpts;
         entries = {"Method", demod.method};
         if strcmpi(demod.method, "fourier")
-            entries(end + 1, :) = {"Filter width (fraction of carrier)", demod.filterWidthFrac};
+            entries(end + 1, :) = {"Filter radius across the fringes (fraction of carrier)", demod.filterWidthFrac};
+            entries(end + 1, :) = {"Filter aspect ratio (along/across)", demod.filterAspectRatio};
         else
             entries = [entries; {
                 "Wavelengths [min max] (RAW px)",   demod.waveletWavelengths
@@ -4109,9 +4137,10 @@ methods (Access = private, Static)
         output.waveletAngles = 0;
         output.waveletWavelengths = [];   % [min max], RAW px
         output.waveletDivisions = [];
-        output.waveletSigma = 0.6;
-        output.waveletGamma = 1;
+        output.waveletSigma = 0.65;
+        output.waveletGamma = 0.6;
         output.filterWidthFrac = 0.6;
+        output.filterAspectRatio = 1;
     end
 
     function output = defaultPhaseCorrOpts()
