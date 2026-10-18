@@ -82,16 +82,18 @@ d = abs(n_c'*t1 + dz);   % distance from camera center to homography plane
 H = K*(R2*R1' - (R1*R2'*t2 - t1)*n_c'/d)*inv(K);
 H = H./H(3,3);  % normalize
 
-% determine optimum image resolution
+% determine optimum image resolution -----------
 % dewarped image should be large enough so that downsampling does not occur,
 % but no larger
+Nx = imageSize(2);
+Ny = imageSize(1);
 
 % corner points, starting from top left and moving counter-clockwise
 % first row is u, second is v
-cornerPoints = [1 1 1; 
-                1, imageSize(1), 1;
-                imageSize(2), imageSize(1), 1;
-                imageSize(2), 1, 1
+cornerPoints = [1, 1, 1; 
+                1, Ny, 1;
+                Nx, Ny, 1;
+                Nx, 1, 1
                ]';
 tform_corner= H*cornerPoints;
 % coordinates of corners in dewarped image
@@ -109,9 +111,9 @@ yEdgeMin = edgeLengths(2,3);
 % original image
 cDiff = diff(tform_corner, 1, 2);
 if abs(cDiff(2,1)) > abs(cDiff(1,1))    % world x axis aligned with u
-    scale = max(imageSize(2)/xEdgeMin, imageSize(1)/yEdgeMin);    
+    scale = max((Nx - 1)/xEdgeMin, (Ny - 1)/yEdgeMin);    
 else                                    % world x axis aligned with v
-    scale = max(imageSize(1)/xEdgeMin, imageSize(2)/yEdgeMin);
+    scale = max((Ny - 1)/xEdgeMin, (Nx - 1)/yEdgeMin);
 end
 
 H(1:2,:) = H(1:2,:)*scale;
