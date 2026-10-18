@@ -133,7 +133,6 @@ function calibStruct = readDavisPinholeCalibration(cMap)
     
     calibStruct = struct();
     calibStruct.intrinsics = intrinsics;
-    calibStruct.intrinsicsMatlab = intrinsicsMatlab;
     calibStruct.extrinsics = extrinsics;
     calibStruct.EulerAngles = rotation';    % X,Y,Z in radians
     calibStruct.scaling = scaleStructDavis;
