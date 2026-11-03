@@ -84,6 +84,7 @@ methods (Access = public)
             opts.refCamInd      (1,1) {mustBeInteger}           = 1
             opts.imgRotAngle    (1,1) double                    = 0
             opts.burntPixelMask                                 = []
+            opts.burntPixelWeights (1,2) double                 = [1 1]
         end
 
         if ~isvarname(caseID)
@@ -111,6 +112,7 @@ methods (Access = public)
         obj.procOpts.compRectOrg        = opts.compRect;
         obj.procOpts.imgRotAngle        = opts.imgRotAngle;
         obj.procOpts.burntPixelMask     = logical(opts.burntPixelMask);
+        obj.procOpts.burntPixelWeights  = opts.burntPixelWeights;
         obj.source.dataCamInd           = opts.dataCamInd;
         obj.source.refCamInd            = opts.refCamInd;
 
@@ -131,10 +133,9 @@ methods (Access = public)
             obj.readCameraCalibration(opts.camCalibPath, opts.camCalibNum);
         end
 
-        obj.checkBurntPixelMask(obj.procOpts.burntPixelMask);
         if ~isempty(obj.procOpts.burntPixelMask)
-            [obj.procOpts.burntPixelRows, ...
-                obj.procOpts.burntPixelCols] = find(obj.procOpts.burntPixelMask);
+            obj.checkBurntPixelMask(obj.procOpts.burntPixelMask);
+            obj.prepBurntPixelInterp();
         end
 
         obj.fringe.periodOrg = opts.period;
@@ -315,19 +316,19 @@ methods (Access = public)
     %                            fringes (default false)
     %   discardThreshold       - frames whose mean intensity inside the
     %                            computational domain exceeds this value
-    %                            are stored as NaN; [] disables (default)
+    %                            are stored as NaN. [] disables (default)
     %   burntPixelMask         - logical mask of burnt pixels, the size of
-    %                            the raw, unrectified image; [] for none
-    %   burntPixelInterpMethod - how burnt pixels are filled: "fastLinear"
-    %                            (4-neighbor average, default) or "smooth"
-    %                            (regionfill)
+    %                            the raw, unrectified image. [] for none
+    %   burntPixelWeights      - vector [wRow, wCol] specifying the
+    %                            coupling strength between vertical and
+    %                            horizontal pixels
         arguments
             obj
             opts.dcSubtraction          (1,1) logical
             opts.refImgSmoothing        (1,1) logical
             opts.discardThreshold       {mustBeNumeric, mustBeScalarOrEmpty}
             opts.burntPixelMask         {mustBeNumericOrLogical}
-            opts.burntPixelInterpMethod (1,1) string {mustBeMember(opts.burntPixelInterpMethod, ["fastLinear", "smooth"])}
+            opts.burntPixelWeights      (1,2) double
         end
         if isfield(opts, 'dcSubtraction')
             obj.procOpts.dcSubtraction = opts.dcSubtraction;
@@ -341,17 +342,16 @@ methods (Access = public)
         if isfield(opts, 'burntPixelMask')
             obj.checkBurntPixelMask(opts.burntPixelMask);
             obj.procOpts.burntPixelMask = logical(opts.burntPixelMask);
-            [obj.procOpts.burntPixelRows, ...
-             obj.procOpts.burntPixelCols] = find(obj.procOpts.burntPixelMask);
         end
-        if isfield(opts, 'burntPixelInterpMethod')
-            obj.procOpts.burntPixelInterpMethod = opts.burntPixelInterpMethod;
+        if isfield(opts, 'burntPixelWeights')
+            obj.procOpts.burntPixelWeights = opts.burntPixelWeights;
         end
 
-        maskChanged   = isfield(opts, 'burntPixelMask');
-        methodMatters = isfield(opts, 'burntPixelInterpMethod') ...
-                                   && ~isempty(obj.procOpts.burntPixelMask);
-        if (maskChanged || methodMatters) && ~isempty(obj.imgData.refRaw)
+        maskChanged     = isfield(opts, 'burntPixelMask');
+        weightsChanged  = isfield(opts, 'burntPixelWeights') ...
+                                && ~isempty(obj.procOpts.burntPixelMask);
+        if (maskChanged || weightsChanged) && ~isempty(obj.imgData.refRaw)
+            obj.prepBurntPixelInterp();
             obj.readRefImage(obj.source.refPath);
             obj.rectifyRefImage();
         end
@@ -1178,20 +1178,26 @@ methods (Access = public)
         end
     end
 
-    function imageCell = getRectifiedImages(obj, firstTimestep, lastTimestep)
-    % Rectify and return the image sequence in a cell array without preprocessing.
+    function imgArr = getRectifiedImages(obj, firstTimestep, lastTimestep)
+    % Rectify and return the image sequence as a 3D array without preprocessing.
         arguments
             obj
             firstTimestep (1,1) double = obj.procOpts.solveRange(1)
             lastTimestep (1,1) double = obj.procOpts.solveRange(2)
         end
 
-        imageCell = cell(1, lastTimestep - firstTimestep + 1);
+        img = obj.readImage(firstTimestep);
+        img = obj.rectify(img);
 
-        for timestep = firstTimestep:lastTimestep
+        [Ny, Nx] = size(img);
+        Nt = lastTimestep - firstTimestep + 1;
+        imgArr = zeros(Ny, Nx, Nt);
+        imgArr(:,:,1) = img;
+
+        for timestep = firstTimestep + 1:lastTimestep
             img = obj.readImage(timestep);
             img = obj.rectify(img);
-            imageCell{timestep - firstTimestep + 1} = img;
+            imgArr(:,:,timestep - firstTimestep + 1) = img;
         end
     end
 end
@@ -3290,13 +3296,45 @@ methods (Access = private)
         end
     end
 
-    function imgOut = interpBurntPixels(obj, img)
-        if strcmpi(obj.procOpts.burntPixelInterpMethod, 'fastLinear')
-            imgOut = obj.fastFill(img, obj.procOpts.burntPixelRows, ...
-                obj.procOpts.burntPixelCols);
-        elseif strcmpi(obj.procOpts.burntPixelInterpMethod, 'smooth')
-            imgOut = regionfill(img, obj.procOpts.burntPixelMask);
+    function prepBurntPixelInterp(obj)
+    % Precompute the weights that interpolate burnt pixels from their boundary.
+        mask = obj.procOpts.burntPixelMask;
+        wRow = obj.procOpts.burntPixelWeights(1);
+        wCol = obj.procOpts.burntPixelWeights(2);
+
+        [ny, nx] = size(mask);
+        [r, c] = find(mask);
+        n = numel(r);
+        lin = sub2ind([ny nx], r, c);   % linear indices of burnt pixels
+        unk = zeros(ny, nx);   unk(lin) = 1:n;     % burnt-pixel numbering
+        dirs = [-1 0 wRow; 1 0 wRow; 0 -1 wCol; 0 1 wCol];
+        dg = zeros(n, 1);
+        Ai = []; Aj = []; Av = []; Bi = []; Bq = []; Bv = [];
+        for k = 1:4
+            rq = r + dirs(k,1);
+            cq = c + dirs(k,2);
+            w = dirs(k,3);
+            ok = find(rq >= 1 & rq <= ny & cq >= 1 & cq <= nx);
+            dg(ok) = dg(ok) + w;
+            q = sub2ind([ny nx], rq(ok), cq(ok));
+            j = unk(q);   isU = j > 0;
+            Ai = [Ai; ok(isU)];   Aj = [Aj; j(isU)];   Av = [Av; -w*ones(nnz(isU),1)];
+            Bi = [Bi; ok(~isU)];  Bq = [Bq; q(~isU)];  Bv = [Bv; w*ones(nnz(~isU),1)];
         end
+        A = sparse(1:n, 1:n, dg, n, n) + sparse(Ai, Aj, Av, n, n);
+        [bLin, ~, bCol] = unique(Bq);
+        B = sparse(Bi, bCol, Bv, n, numel(bLin));
+        obj.procOpts.burntPixelStruct.linIdx = lin;
+        obj.procOpts.burntPixelStruct.boundaryIdx = bLin;
+        obj.procOpts.burntPixelStruct.weights = A \ B;
+    end
+
+    function img = interpBurntPixels(obj, img)
+        lin = obj.procOpts.burntPixelStruct.linIdx;
+        bLin = obj.procOpts.burntPixelStruct.boundaryIdx;
+        W = obj.procOpts.burntPixelStruct.weights;
+
+        img(lin) = W * img(bLin);
     end
 
     function updateGeometry(obj)
@@ -3679,15 +3717,15 @@ methods (Access = private)
 
         % ---- preprocessing ----
         nBurnt = nnz(obj.procOpts.burntPixelMask);
+        interpWeights = obj.procOpts.burntPixelWeights;
         entries = {
-            "DC subtraction",                       obj.procOpts.dcSubtraction
-            "Reference image smoothing",            obj.procOpts.refImgSmoothing
-            "Discard threshold (mean intensity)",   obj.procOpts.discardThreshold
-            "Burnt pixels",                         nBurnt
+            "DC subtraction",                                   obj.procOpts.dcSubtraction
+            "Reference image smoothing",                        obj.procOpts.refImgSmoothing
+            "Discard threshold (mean intensity)",               obj.procOpts.discardThreshold
+            "Burnt pixels",                                     nBurnt
+            "Burnt pixel interpolation weights (rows, cols)",   interpWeights
             };
-        if nBurnt > 0
-            entries(end + 1, :) = {"Burnt pixel fill method", obj.procOpts.burntPixelInterpMethod};
-        end
+
         entries(end + 1, :) = {"Parallax correction", obj.procOpts.parallaxCorrection};
         sections(end + 1, :) = {"Preprocessing", entries};
 
@@ -4103,76 +4141,75 @@ methods (Access = private, Static)
     end
 
     function output = defaultImgData()
-        output.refRaw = [];
-        output.refScaled = [];
-        output.ref = [];
-        output.curr = [];
+        output.refRaw       = [];
+        output.refScaled    = [];
+        output.ref          = [];
+        output.curr         = [];
     end
 
     function output = defaultPhaseData()
-        output.curr = [];
-        output.prev = [];
-        output.stack = [];
+        output.curr             = [];
+        output.prev             = [];
+        output.stack            = [];
         output.refComplexCoeffs = [];
-        output.bandpassFilter = [];
-        output.fourierPadding = [0, 0];
+        output.bandpassFilter   = [];
+        output.fourierPadding   = [0, 0];
     end
 
     function output = defaultElevData()
-        output.stack = [];
-        output.curr = [];
+        output.stack    = [];
+        output.curr     = [];
     end
 
     function output = defaultFringe()
-        output.normalVec = [];
-        output.normalAxis = "";
-        output.periodOrg = [];
-        output.period = [];
-        output.tiltAngle = [];
+        output.normalVec    = [];
+        output.normalAxis   = "";
+        output.periodOrg    = [];
+        output.period       = [];
+        output.tiltAngle    = [];
     end
 
     function output = defaultDemodOpts()
-        output.method = "fourier";
-        output.waveletScales = [];
-        output.waveletAngles = 0;
-        output.waveletWavelengths = [];   % [min max], RAW px
-        output.waveletDivisions = [];
-        output.waveletSigma = 0.65;
-        output.waveletGamma = 0.6;
-        output.filterWidthFrac = 0.6;
-        output.filterAspectRatio = 1;
+        output.method               = "fourier";
+        output.waveletScales        = [];
+        output.waveletAngles        = 0;
+        output.waveletWavelengths   = [];   % [min max], RAW px
+        output.waveletDivisions     = [];
+        output.waveletSigma         = 0.65;
+        output.waveletGamma         = 0.6;
+        output.filterWidthFrac      = 0.6;
+        output.filterAspectRatio    = 1;
     end
 
     function output = defaultPhaseCorrOpts()
-        output.method = "temporal";
-        output.lineInds = [];
-        output.startEdge = "left";
-        output.numSamples = 9;
-        output.peakClearance = 2.5;
-        output.trackedPeakInd = [];
-        output.peakPromFrac = 1/4;
-        output.peakMinFrac = 1/3;
+        output.method           = "temporal";
+        output.lineInds         = [];
+        output.startEdge        = "left";
+        output.numSamples       = 9;
+        output.peakClearance    = 2.5;
+        output.trackedPeakInd   = [];
+        output.peakPromFrac     = 1/4;
+        output.peakMinFrac      = 1/3;
     end
 
     function output = defaultProcOpts()
-        output.solveRange = [];
-        output.unwrapMethod = "1D";
-        output.unwrapMarginOrg = [];        % [marginX marginY], RAW frame
-        output.unwrapMargin = [];           % [marginX marginY], COMP frame
-        output.imgRotAngle = 0;             % in degrees and positive clockwise
-        output.parallaxCorrection = false;
-        output.discardThreshold = [];
-        output.dcSubtraction = true;
-        output.refImgSmoothing = false;
-        output.burntPixelInterpMethod = 'fastLinear';
-        output.burntPixelMask = [];
-        output.burntPixelRows = [];
-        output.burntPixelCols = [];
-        output.compRectOrg = [];
-        output.compRect = [];
-        output.outputRectOrg = [];
-        output.outputRect = [];
-        output.resizeFactor = 1;
+        output.solveRange           = [];
+        output.unwrapMethod         = "1D";
+        output.unwrapMarginOrg      = []; % [marginX marginY], RAW frame
+        output.unwrapMargin         = []; % [marginX marginY], COMP frame
+        output.imgRotAngle          = 0;  % in degrees and positive clockwise
+        output.parallaxCorrection   = false;
+        output.discardThreshold     = [];
+        output.dcSubtraction        = true;
+        output.refImgSmoothing      = false;
+        output.burntPixelMask       = [];
+        output.burntPixelWeights    = [1 1];
+        output.burntPixelStruct     = [];
+        output.compRectOrg          = [];
+        output.compRect             = [];
+        output.outputRectOrg        = [];
+        output.outputRect           = [];
+        output.resizeFactor         = 1;
         output.resizeFactorOutput = 0.5;
 
         % fault detection in unwrapAndFlag
@@ -4186,31 +4223,31 @@ methods (Access = private, Static)
     end
 
     function output = defaultLoopState()
-        output.stackInd = 0;
-        output.timestep = [];
-        output.isFirstTimestep = false;
-        output.bufferIndex = 1;
-        output.discardFrame = false;
+        output.stackInd         = 0;
+        output.timestep         = [];
+        output.isFirstTimestep  = false;
+        output.bufferIndex      = 1;
+        output.discardFrame     = false;
     end
 
     function output = defaultCameraCalib()
-        output.type = "none";
-        output.path = "";
-        output.X.Unit = 'pixel';
-        output.X.SlopeOrg = 1;
-        output.X.Offset = 0;
-        output.Y.Unit = 'pixel';
-        output.Y.SlopeOrg = 1;
-        output.Y.Offset = 0;
+        output.type         = "none";
+        output.path         = "";
+        output.X.Unit       = 'pixel';
+        output.X.SlopeOrg   = 1;
+        output.X.Offset     = 0;
+        output.Y.Unit       = 'pixel';
+        output.Y.SlopeOrg   = 1;
+        output.Y.Offset     = 0;
     end
 
     function output = defaultWorldCoords()
-        output.mesh = [];
-        output.scaling.X.SlopeOrg = 1;
-        output.scaling.X.Offset = 0;
-        output.scaling.Y.SlopeOrg = 1;
-        output.scaling.Y.Offset = 0;
-        output.scaling.mmPerPixelOrg = 1;
+        output.mesh                     = [];
+        output.scaling.X.SlopeOrg       = 1;
+        output.scaling.X.Offset         = 0;
+        output.scaling.Y.SlopeOrg       = 1;
+        output.scaling.Y.Offset         = 0;
+        output.scaling.mmPerPixelOrg    = 1;
     end
 
     function output = defaultElevModel()
@@ -4218,13 +4255,13 @@ methods (Access = private, Static)
     end
 
     function output = defaultOutputConfig()
-        output.phaseStorage = false;
-        output.imageStorage = false;
-        output.elevStorage = true;
-        output.reportProgressEnabled = true;
-        output.streaming = false;
-        output.bufferLength = 1000;
-        output.saveFolder = "";
+        output.phaseStorage             = false;
+        output.imageStorage             = false;
+        output.elevStorage              = true;
+        output.reportProgressEnabled    = true;
+        output.streaming                = false;
+        output.bufferLength             = 1000;
+        output.saveFolder               = "";
     end
 
     function output = defaultDiagnostics()
@@ -4249,20 +4286,6 @@ methods (Access = private, Static)
     function n = shrunkArrSize(sz, scale)
     % Rows and columns returned by shrinkArr for an array of size sz.
         n = max(1, floor(scale*sz + (1 - scale)/2 + 1e-9));
-    end
-
-    function imgOut = fastFill(img, interpRows, interpCols)
-    % Replace pixels with values interpolated from neighbors.
-        imgOut = img;
-
-        for i = 1:length(interpRows)
-            r = interpRows(i);
-            c = interpCols(i);
-            % simple 4-neighbor average
-            % assumes bad pixels aren't on the image edge
-            imgOut(r, c, :) = (img(r-1, c, :) + img(r+1, c, :) + ...
-                img(r, c-1, :) + img(r, c+1, :)) / 4;
-        end
     end
 
     function len = faultLength(faults)
@@ -4599,7 +4622,7 @@ methods (Static)
         win = hannWin(ny) * hannWin(nx)';
         F = abs(fft2(img .* win));
 
-        % integer frequency grids: bin value = cycles across the crop
+        % integer frequency grids
         px = [0:floor(nx/2), -ceil(nx/2)+1:-1];
         py = [0:floor(ny/2), -ceil(ny/2)+1:-1];
         [PX, PY] = meshgrid(px, py);
