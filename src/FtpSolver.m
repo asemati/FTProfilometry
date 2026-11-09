@@ -987,7 +987,7 @@ methods (Access = public)
         solveRange = obj.procOpts.solveRange;
         for quantity = obj.storedQuantities()
             if obj.outputConfig.streaming
-                obj.checkResultFile(quantity)
+                obj.checkResultFile(quantity);
             else
                 frames = obj.outputSubarray(quantity, solveRange(1), solveRange(2));
                 if isempty(frames)
@@ -999,9 +999,9 @@ methods (Access = public)
             end
         end
 
-        obj.writeCoordinateMesh()
-        obj.writeDiagnostics()
-        obj.writeLog()
+        obj.writeCoordinateMesh();
+        obj.writeDiagnostics();
+        obj.writeLog();
     end
 
     function savedObj = saveobj(obj)
