@@ -84,7 +84,7 @@ methods (Access = public)
             opts.refCamInd      (1,1) {mustBeInteger}           = 1
             opts.imgRotAngle    (1,1) double                    = 0
             opts.burntPixelMask                                 = []
-            opts.burntPixelWeights (1,2) double                 = [1 1]
+            opts.burntPixelWeights (1,2) double {mustBePositive} = [1 1]
         end
 
         if ~isvarname(caseID)
@@ -320,15 +320,20 @@ methods (Access = public)
     %   burntPixelMask         - logical mask of burnt pixels, the size of
     %                            the raw, unrectified image. [] for none
     %   burntPixelWeights      - vector [wRow, wCol] specifying the
-    %                            coupling strength between vertical and
-    %                            horizontal pixels
+    %                            coupling strength between the pixels above
+    %                            and below (wRow) and to the left and right
+    %                            (wCol). Only their ratio matters. Weight
+    %                            the direction along the fringes more
+    %                            heavily, e.g. a large wRow for vertical
+    %                            fringes.
+    %
         arguments
             obj
             opts.dcSubtraction          (1,1) logical
             opts.refImgSmoothing        (1,1) logical
-            opts.discardThreshold       {mustBeNumeric, mustBeScalarOrEmpty}
-            opts.burntPixelMask         {mustBeNumericOrLogical}
-            opts.burntPixelWeights      (1,2) double
+            opts.discardThreshold                       {mustBeNumeric, mustBeScalarOrEmpty}
+            opts.burntPixelMask                         {mustBeNumericOrLogical}
+            opts.burntPixelWeights      (1,2) double    {mustBePositive}
         end
         if isfield(opts, 'dcSubtraction')
             obj.procOpts.dcSubtraction = opts.dcSubtraction;
@@ -350,10 +355,12 @@ methods (Access = public)
         maskChanged     = isfield(opts, 'burntPixelMask');
         weightsChanged  = isfield(opts, 'burntPixelWeights') ...
                                 && ~isempty(obj.procOpts.burntPixelMask);
-        if (maskChanged || weightsChanged) && ~isempty(obj.imgData.refRaw)
+        if maskChanged || weightsChanged
             obj.prepBurntPixelInterp();
-            obj.readRefImage(obj.source.refPath);
-            obj.rectifyRefImage();
+            if ~isempty(obj.imgData.refRaw)
+                obj.readRefImage(obj.source.refPath);
+                obj.rectifyRefImage();
+            end
         end
     end
 
@@ -1010,10 +1017,12 @@ methods (Access = public)
         savedObj.loopState          = obj.loopState;
         savedObj.cameraCalib        = obj.cameraCalib;
         savedObj.worldCoords        = obj.worldCoords;
-        savedObj.worldCoords.mesh   = [];
         savedObj.elevModel          = obj.elevModel;
         savedObj.outputConfig       = obj.outputConfig;
         savedObj.diagnostics        = obj.diagnostics;
+
+        savedObj.procOpts.burntPixelStruct  = [];
+        savedObj.worldCoords.mesh           = [];
         if isfield(savedObj.elevModel, 'poly')
             savedObj.elevModel.poly.coeffMatOrg = [];
             savedObj.elevModel.poly.coeffMat    = [];
@@ -3151,6 +3160,10 @@ methods (Access = private)
         obj.readRefImage(obj.source.refPath);
         obj.initDataset(obj.source.dataPath);
 
+        if ~isempty(obj.procOpts.burntPixelMask)
+            obj.checkBurntPixelMask(obj.procOpts.burntPixelMask);
+        end
+
         obj.rectifyRefImage();
         if strcmpi(obj.elevModel.type, 'polynomial') && isfield(obj.elevModel, 'path')
             obj.setElevModelPoly(obj.elevModel.path)
@@ -3330,6 +3343,10 @@ methods (Access = private)
     end
 
     function img = interpBurntPixels(obj, img)
+        if isempty(obj.procOpts.burntPixelStruct)
+            obj.prepBurntPixelInterp();
+        end
+
         lin = obj.procOpts.burntPixelStruct.linIdx;
         bLin = obj.procOpts.burntPixelStruct.boundaryIdx;
         W = obj.procOpts.burntPixelStruct.weights;
@@ -3622,7 +3639,22 @@ methods (Access = private)
     function writeCoordinateMesh(obj)
     % Save the world coordinates (mm) of the result arrays.
         [xMesh, yMesh] = obj.outputCoordinates();
-        save(fullfile(obj.caseFolder(), "coordinateMesh.mat"), 'xMesh', 'yMesh')
+        filePath = fullfile(obj.caseFolder(), "coordinateMesh.mat");
+
+        units = 'mm';
+        save(filePath, 'units', '-v7.3');
+
+        [ny, nx] = size(xMesh);
+        chunks = struct('xMesh', [ny, min(64, nx)], ...
+            'yMesh', [min(64, ny), nx]);
+        meshes = struct('xMesh', xMesh, 'yMesh', yMesh);
+        for name = ["xMesh", "yMesh"]
+            dataset = "/" + name;
+            h5create(filePath, dataset, size(meshes.(name)), Deflate=6, ...
+                ChunkSize=chunks.(name));
+            h5write(filePath, dataset, meshes.(name));
+            h5writeatt(filePath, dataset, "MATLAB_class", 'double');
+        end
     end
 
     function writeDiagnostics(obj)
@@ -3723,7 +3755,7 @@ methods (Access = private)
             "Reference image smoothing",                        obj.procOpts.refImgSmoothing
             "Discard threshold (mean intensity)",               obj.procOpts.discardThreshold
             "Burnt pixels",                                     nBurnt
-            "Burnt pixel interpolation weights (rows, cols)",   interpWeights
+            "Burnt pixel interpolation weights (vertical, horizontal)",   interpWeights
             };
 
         entries(end + 1, :) = {"Parallax correction", obj.procOpts.parallaxCorrection};

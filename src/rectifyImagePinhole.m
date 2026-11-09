@@ -150,9 +150,15 @@ T = (M_image \ [P_world(:,1), P_world(:,2)])';
 
 Width = size(imageRct, 2);
 Height = size(imageRct, 1);
-[U, V] = meshgrid(1:Width, 1:Height); 
-xMesh = T(1,1)*U + T(1,2)*V + T(1,3); 
-yMesh = T(2,1)*U + T(2,2)*V + T(2,3);
+
+if theta == 0
+    [xMesh, yMesh] = meshgrid(T(1,1)*(1:Width) + T(1,3), ...
+        T(2,2)*(1:Height) + T(2,3));
+else
+    [U, V] = meshgrid(1:Width, 1:Height);
+    xMesh = T(1,1)*U + T(1,2)*V + T(1,3);
+    yMesh = T(2,1)*U + T(2,2)*V + T(2,3);
+end
 
 scaling = struct();
 scaling.X.Unit = 'mm';
